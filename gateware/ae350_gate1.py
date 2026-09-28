@@ -18,6 +18,7 @@ from litex.soc.integration.soc import SoCRegion
 from litex.soc.interconnect import ahb as litex_ahb
 from litex.soc.interconnect.csr import AutoCSR, CSRStorage
 from litex.soc.cores.cpu.gowin_ae350.core import GowinAE350
+from litex.soc.cores.video import VideoGowinHDMIPHY
 
 from litex_boards.targets import sipeed_tang_console as tang_console
 
@@ -31,6 +32,21 @@ from stream_loader import StreamLoader
 ROOT = Path(__file__).resolve().parents[1]
 PHOSPHOR = ROOT / "third_party" / "tang-phosphor"
 MAIN_RAM_BASE = 0x4000_0000
+HDMI_TIMINGS = {
+    # The proven Tang Console PHY uses a 125 MHz serializer clock divided by
+    # five.  Standard 640x480 blanking at the resulting 25 MHz pixel clock is
+    # 59.52 Hz, close enough for normal HDMI/DVI sinks while keeping the video
+    # and 75 MHz system clocks on the existing PLL.
+    "pix_clk":       25e6,
+    "h_active":      640,
+    "h_blanking":    160,
+    "h_sync_offset": 16,
+    "h_sync_width":  96,
+    "v_active":      480,
+    "v_blanking":    45,
+    "v_sync_offset": 10,
+    "v_sync_width":  2,
+}
 
 
 class Gate1PeripheralAHB2Wishbone(LiteXModule):
@@ -146,11 +162,12 @@ class Gate1PeripheralAHB2Wishbone(LiteXModule):
 
 
 class Gate1CRG(LiteXModule):
-    """Board clock, 75 MHz system PLL, and the AE350's dedicated PLL.
+    """Board clock, system/video PLL, and the AE350's dedicated PLL.
 
     The DDR3 controller owns its 400 MHz PLL and 100 MHz user clock
     (gowin_ddr3.GowinDDR3); the system domain reaches it through a native-port
-    clock-domain crossing.
+    clock-domain crossing.  The system PLL also produces the 125 MHz HDMI
+    serializer clock, divided by five for the pixel domain.
     """
 
     def __init__(self, platform, sys_clk_freq, with_sdram=False,
@@ -164,6 +181,8 @@ class Gate1CRG(LiteXModule):
         self.cd_sys = ClockDomain()
         self.cd_cpu = ClockDomain(reset_less=True)
         self.cd_diag = ClockDomain()
+        self.cd_hdmi = ClockDomain()
+        self.cd_hdmi5x = ClockDomain()
         self.cpu_pll_lock = cpu_pll_lock = Signal()
         self.ddr_rst = Signal()
 
@@ -187,6 +206,14 @@ class Gate1CRG(LiteXModule):
         self.comb += pll.reset.eq(~por_done | ~reset_n | self.rst)
         pll.register_clkin(clk50, 50e6)
         pll.create_clkout(self.cd_sys, sys_clk_freq)
+        pll.create_clkout(self.cd_hdmi5x, 125e6, margin=1e-3)
+        self.specials += Instance("CLKDIV",
+            p_DIV_MODE = "5",
+            i_HCLKIN   = self.cd_hdmi5x.clk,
+            i_RESETN   = 1,
+            i_CALIB    = 0,
+            o_CLKOUT   = self.cd_hdmi.clk,
+        )
         # Constrain the PLL output net, which synthesis keeps; the sys_clk alias
         # is merged away.
         config = pll.compute_config()
@@ -194,6 +221,12 @@ class Gate1CRG(LiteXModule):
             multiply_by=config["fdiv"] * config["mdiv"],
             divide_by=config["idiv"] * config["odiv0"],
             name="sys_clk")
+        platform.add_generated_clock_constraint(pll.clkouts[1].clk, clk50,
+            multiply_by=config["fdiv"] * config["mdiv"],
+            divide_by=config["idiv"] * config["odiv1"],
+            name="hdmi5x_clk")
+        platform.add_generated_clock_constraint(self.cd_hdmi.clk,
+            pll.clkouts[1].clk, divide_by=5, name="hdmi_clk")
 
         platform.add_source(str(PHOSPHOR / "src/ae350/ae350_pll.v"))
         self.specials += Instance("ae350_pll",
@@ -214,6 +247,7 @@ class Gate1CRG(LiteXModule):
         self.specials += [
             AsyncResetSynchronizer(self.cd_cpu,  ~cpu_pll_lock),
             AsyncResetSynchronizer(self.cd_diag, ~por_done),
+            AsyncResetSynchronizer(self.cd_hdmi, ~pll.locked),
         ]
         platform.add_period_constraint(self.cd_cpu.clk, 1e9 / 750e6)
         platform.toolchain.additional_cst_commands.append(
@@ -339,6 +373,21 @@ class Gate1SoC(tang_console.BaseSoC):
         # Tang-Control's proven transport uses SystemVerilog sized casts and
         # block-local declarations despite its historical .v filenames.
         self.platform.toolchain.options["verilog_std"] = "sysv2017"
+
+        # First visible milestone: a self-contained diagnostic pattern.  It
+        # deliberately does not consume DDR3 bandwidth; the next video cycle
+        # will replace it with line-buffered scanout from PSX VRAM.
+        hdmi = self.platform.request("hdmi")
+        self.comb += [
+            hdmi.hdp.eq(1),
+            hdmi.pwr_sav.eq(0),
+        ]
+        self.videophy = VideoGowinHDMIPHY(hdmi, clock_domain="hdmi")
+        self.add_video_colorbars(
+            phy=self.videophy,
+            timings=("640x480@59.52Hz", HDMI_TIMINGS),
+            clock_domain="hdmi",
+        )
 
         # Do not release the hard core before its dedicated PLL locks.  The
         # generic wrapper only includes the system-domain reset by default.

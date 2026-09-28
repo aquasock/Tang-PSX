@@ -655,3 +655,34 @@ Reevaluate the plan with the user before continuing; the remaining Gate 1 work i
 - User Test: PASS
 
 ---
+
+## 21 COMMIT Unreleased 2026-09-28T16:20:59-07:00
+
+#### Coming From:
+
+Unreleased c626b23
+
+#### Purpose:
+
+Add and prove deterministic HDMI color bars as the first visible Tang-PSX milestone while preserving the working Gate 1 DDR3 and program-loader paths.
+
+#### Outcome:
+
+At the user's direction, HDMI output moved ahead of the R3000A interpreter and software GTE work so that subsequent development has immediate visual feedback. `Gate1CRG` now generates a 125 MHz serializer clock from the existing system PLL and divides it by five for a 25 MHz pixel domain; the Gowin HDMI PHY drives standard 640x480 blanking at 59.52 Hz and an eight-bar LiteX diagnostic pattern directly from FPGA logic without consuming DDR3 bandwidth. The six relevant upstream video timing and color-bar tests and the two dedicated color-bar tests passed. All four placement variants met setup and hold timing. Option 4 was selected for its balanced margins, with reported Fmax values of 83.614 MHz for the 75 MHz system clock, 117.211 MHz for the 100 MHz DDR clock, 72.462 MHz for the 50 MHz board/diagnostic clock, and 134.725 MHz for the 25 MHz pixel domain; the dedicated 125 MHz OSER10 serializer path has no fabric Fmax report. The deployed option-4 image was 5,082,310 bytes with SHA-256 `50efcce467a59e434b403155b847990add5c840e460ff72dccc11ae80a60c71a`, and Tang-Control verified its SD readback CRC32 `0x13bd5fc4`. The user saw the expected color bars on the HDMI display. The post-video hardware regression reached Gate 1 stage `0x80000001` with failure 0 and feature bitmap `0x7f`; `hello.tpx` returned `0x600d0001`, `blob.tpx` returned its expected `0x5bf4bf30`, and the loader reported two sessions, 49,577 streamed bytes, two ends, no cancels, and no overflow. Tang-Control matched all 167 FPGA requests with responses and reported zero timeouts, CRC errors, malformed packets, unexpected responses, USB drops, or receive-FIFO overflows. `README.md` now distinguishes this self-contained diagnostic output from the planned DDR-backed PSX display path. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry against the canonical template and 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate the plan with the user before continuing; the proposed next visible milestone is DDR-backed, line-buffered scanout from PSX VRAM, after which the R3000A interpreter and software GTE checks can use the proven program loader.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

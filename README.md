@@ -4,10 +4,10 @@ Tang-PSX is an experimental PlayStation core for the Sipeed Tang Console
 138K. It combines the GW5AST AE350 hard RV32 processor with FPGA peripherals
 and uses the Tang-Control BL616 firmware and transport.
 
-The first engineering gate is deliberately headless. It must prove that the
-AE350 can initialize and use board DDR3, execute newly generated RV32 code,
-and expose deterministic results through Tang-Control before PSX hardware is
-added.
+The first engineering gate proved that the AE350 can initialize and use board
+DDR3, execute newly generated RV32 code, and expose deterministic results
+through Tang-Control. The current image also drives HDMI with a deterministic
+color-bar pattern as the first visible milestone before PSX hardware is added.
 
 ## Gate 1 status ABI
 
@@ -104,6 +104,15 @@ python3 tools/ae350_run.py run hello.tpx --reset
 The last command resets the AE350, waits for the ROM checks and loader to become
 ready again, then streams the program. `python3 tools/ae350_run.py status`
 prints the loader, stream, result-register, and firmware-log state.
+
+## HDMI diagnostic output
+
+Gate 1 drives a 640x480 eight-bar diagnostic pattern directly from FPGA logic.
+The system PLL supplies a 125 MHz HDMI serializer clock, divided by five for a
+25 MHz pixel clock. Standard 640x480 blanking produces a 59.52 Hz refresh rate,
+which is accepted by the tested HDMI display. The pattern does not read DDR3;
+it isolates clocking, pinout, serialization, and display compatibility before
+the next video milestone adds line-buffered scanout from PSX VRAM.
 
 ## Build
 
