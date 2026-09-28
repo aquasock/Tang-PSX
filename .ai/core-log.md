@@ -1,0 +1,437 @@
+## 1 COMMIT Unreleased 2026-09-28T01:58:23-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Bring up the headless Gate 1 AE350 diagnostic image on hardware and determine whether it boots, reports through Tang-Control, and verifies board DDR3 at the 75 MHz controller clock.
+
+#### Outcome:
+
+The FPGA package is marked `GW5AST-LV138PG484AC1/I0`, `2518CAON`, `TS0E44.00`; per Sipeed's Gowin marking rule the fifth character of the lot/date line identifies device revision C, so revision C is the hardware target and the revision-B entry in `.ai/core.md` is stale. Tang-Control loaded core ID `0x51` and returned diagnostic magic `0x54505831` (`TPX1`) over the FPGA UART transport with no transport CRC or malformed-request errors. Bare-metal firmware executed from the AE350's fixed `0x80000000` reset vector and wrote the diagnostic CSRs, and clock/reset status `0x00000011` proved the independent AE350 PLL and the main DDR/system PLL locked while the system, DDR PHY, and CPU resets were released. Artifact `faf55209890883ee03f64c721d9874763da0d682e3663c54925c4c7f759e564c` used the direct AE350/LiteDRAM bridge; SDRAM initialization returned, but deterministic DDR verification failed at word 0 with expected `0x510c4619` and observed `0x5100267a`, the exact word-1 pattern. Artifact `fb10611a5a47cd6f441593dc1ccd507c5a234bd39159d905a9cfc9d33ad30652` used the conservative fabric Wishbone path; initialization again returned, but verification failed at word 0 with observed `0x287a8da2`. Gate 1 is not complete because no deterministic DDR pass or runtime DDR code execution has been demonstrated.
+
+#### Next Steps:
+
+Isolate the word-0 DDR verification failure so that deterministic DDR readback and runtime DDR code execution can be demonstrated, and ask the user whether to correct the stale revision-B device entry in `.ai/core.md` to revision C.
+
+#### Files Modified:
+
+- .gitignore
+- .gitmodules
+- README.md
+- gateware/ae350_gate1.py
+- scripts/build-gate1.sh
+- scripts/env.sh
+- software/gate1/Makefile
+- software/gate1/crt0.S
+- software/gate1/linker.ld
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 2 COMMIT Unreleased 2026-09-28T02:07:43-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Determine whether Gate 1 passes on revision-C hardware when the fabric and DDR controller clock is reduced to 50 MHz.
+
+#### Outcome:
+
+Revision-C artifact `48cd7e3fceaaeb7669a02835f6714315a60c96c03a7238ed70376a269bed00cc` kept the AE350 at 750 MHz, used the conservative fabric Wishbone RAM path, and reduced the fabric/controller clock to 50 MHz (100 MHz DDR CK, DLL-off PHY mode). Tang-Control diagnostics reported terminal stage `0x80000001`, no failure, 16,384 verified DDR words, checksum `0x63c6e40c`, feature bitmap `0x7`, and zero transport CRC or malformed-request errors. Runtime-written RV32 code in DDR returned 42, was replaced, and returned 99 after `fence rw,rw` plus `fence.i`, giving packed diagnostic result `0x002a0063`. Clock/reset status remained `0x00000011` with both PLLs locked and all relevant resets released, and the measured firmware interval was `0x1813843c` AE350 cycles. Gate 1 requirements 1 through 4 are therefore hardware-proven at the diagnostic 50 MHz fabric clock by the device-side diagnostic; no explicit user acceptance of this result was recorded. The required 75 MHz configuration remains unresolved, since both earlier 75 MHz PHY runs failed deterministic DDR readback at word 0.
+
+#### Next Steps:
+
+Restore the required 75 MHz fabric and DDR controller clock and diagnose why deterministic DDR readback fails at word 0 in that configuration.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
+
+## 3 COMMIT Unreleased 2026-09-28T03:08:31-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Diagnose the 75 MHz DDR failure by running quarter-rate PHY calibration with a firmware log and passive PHY-operation counters on reliably powered hardware.
+
+#### Outcome:
+
+Revision-C artifact `358e20223babbf9ef9fd4514eb8b4927e1d73f159508939fb4998d59d4e41209` used the AE350 at 750 MHz, the conservative fabric Wishbone path, a 75 MHz controller clock, and the GW5 DDR PHY in 1:4 mode with a 300 MHz fast clock; its diagnostic ABI 1.2 adds a 128-byte firmware log and passive PHY-operation counters. Gowin reported zero same-clock TNS for every named clock, with diagnostic, system, and fast-clock Fmax of 78.191, 175.505, and 848.356 MHz. The first run was excluded because the user identified that normal board power had not been connected reliably, and the identical artifact was then run from a clean reset with normal power and the Tang-Control data cable both continuously connected. The powered run completed the exhaustive write-DQ/DQS bootstrap and final read-leveling sequence, but both DDR byte lanes printed only failing scan points and `delays: -`; the final log selected byte lane 1 bitslip 4 as the least-bad result without any zero-error delay window. Calibration nevertheless returned success and handed the DFI bus to the controller, after which the deterministic test failed at word 0 with expected `0x510c4619`, observed `0xf7fbffff`, terminal stage `0x80010002`, failure `0x00010002`, and feature bitmap `0x1` (initialization only). Clock/reset status remained `0x00000011`, and Tang-Control matched all 229 FPGA requests with responses and reported zero drops, timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows.
+
+#### Next Steps:
+
+Build a diagnostic that separates missing read bursts from incorrectly sampled data at forced tap and bitslip points, and use it to verify the GW5 quarter-rate burst capture, DQS delay direction and reset behavior, and DFI phase alignment before changing calibration-search speed.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 4 COMMIT Unreleased 2026-09-28T10:06:09-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Determine whether both DDR byte lanes produce read bursts at 75 MHz in X4 mode using a bounded direct-DFI read-burst scan.
+
+#### Outcome:
+
+Revision-C artifact `754b99396654ee38de1423d8985a2a4b6a12429982cea8dd2035296e438074a1` used the AE350 at 750 MHz, a 75 MHz controller clock, the GW5 DDR PHY in 1:4 mode, diagnostic ABI 1.3, and a bounded direct-DFI read-burst scan; the image was 4,539,900 bytes and its upload/readback CRC32 was `0x7e4cf84a`. The build used Gowin placement option 3 and met every named clock with zero setup and hold TNS, with reported Fmax of 81.369 MHz for the 75.002 MHz diagnostic clock, 187.980 MHz for the 75 MHz system clock, and 520.748 MHz for the 300 MHz fast DDR clock. A registered software DFI command path and a Gate-1-local AE350 peripheral AHB bridge removed the previously failing CSR-to-DDR-serializer and AHB-FSM-to-Wishbone-CE paths. After JEDEC initialization, firmware scanned both byte lanes through all 8 input bitslips and all 256 read-delay taps, issuing 4,096 direct DFI reads, and both lanes observed read bursts at every bitslip (packed mask `0x0000ffff`) with 695 detections on lane 0 and 738 on lane 1 (`0x02e202b7`), the first detection for each lane being at bitslip 0, delay 0. The diagnostic reached terminal stage `0x800000d1` with failure 0 and feature bitmap `0x7` (JEDEC initialization plus burst detection on both lanes); passive counters reported 8,192 read-delay operations, zero write-delay operations, and 4,103 software DFI commands. Raw DFI words at the first detected burst were `0xffffffdf`, `0xffffffdf`, `0xffefffff`, and `0xffffffef`, but the scan intentionally wrote no known pattern, so these values are not a data-integrity verdict. Clock/reset status remained `0x00000011` and the Tang-Control status sample reported no drops, timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows. Missing DQS/read-burst activity is therefore excluded as the cause of the earlier 75 MHz failure; the device-side diagnostic passed, and no explicit user acceptance was recorded.
+
+#### Next Steps:
+
+Investigate the remaining boundary of the write-data/DQS path and read sample/data-phase alignment by writing a known pattern through direct DFI commands and scanning for correct data, preserving the proven read-burst instrumentation.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
+
+## 5 COMMIT Unreleased 2026-09-28T10:45:09-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Correct per-phase write capture in the registered DFI injector and test whether a known four-phase write pattern reads back correctly at the default write delay.
+
+#### Outcome:
+
+Revision-C artifact `382b5718d6f866698067d4bc2e64caf2df41e4d61c43d776c6a67b479815f6f4` used diagnostic ABI 1.4 and corrected the registered DFI injector so each phase captures its independently programmed write payload before the single write command is issued; its size was 4,539,900 bytes and Tang-Control verified upload/readback CRC32 `0xd368d61b`. Gowin placement option 3 met every named clock with zero setup and hold TNS, with reported Fmax of 79.045 MHz for the 75.002 MHz diagnostic clock, 165.280 MHz for the 75 MHz system clock, and 638.977 MHz for the 300 MHz fast DDR clock, while parallel builds with placement options 1, 2, and 4 failed timing and were excluded from hardware testing. Firmware initialized DDR3, issued one direct-DFI BL8 write containing four distinct 32-bit phase patterns at the reset/default write delay, then scanned every read bitslip and read-delay coordinate, reaching terminal stage `0x800000d2` with bursts detected on both lanes at all eight bitslips (660 detections on lane 0 and 719 on lane 1). No exact-data coordinate existed at that fixed write delay: failure was `0x00040003`, exact-match masks and counts were zero, and the closest samples had 26 bit errors on lane 0 at bitslip 0/read delay 78 and 24 bit errors on lane 1 at bitslip 0/read delay 84. The captured phase words contained stable portions of the programmed pattern rather than the earlier near-all-ones data, proving that four-phase write payload now reaches the DDR interface but that the reset/default write-DQ/DQS delay is outside the complete-data window. Clock/reset status remained `0x00000011`, and Tang-Control matched all 35 diagnostic requests with responses and reported zero drops, timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows. The corrected four-phase write capture removes the defect that invalidated the earlier full calibration search.
+
+#### Next Steps:
+
+Rerun the normal full Gate 1 calibration, deterministic DDR test, and runtime-code execution at 75 MHz, relying on the write-DQ/DQS training that already sweeps write delay when initial reads fail.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- scripts/build-gate1.sh
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 6 COMMIT Unreleased 2026-09-28T11:01:28-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Rerun the complete 75 MHz X4 Gate 1 calibration, deterministic DDR test, and runtime-code probe with corrected four-phase DFI write capture.
+
+#### Outcome:
+
+Revision-C artifact `837399e1f4921dae49f7bea9d368d2c712d61401be5b03339a754b8d1358a8e9` used diagnostic ABI 1.5 and reran the complete 75 MHz/X4 Gate 1 flow with corrected four-phase DFI write capture; its size was 4,524,028 bytes and Tang-Control verified upload/readback CRC32 `0x2f3e35c8`. Gowin placement option 3 again met every named clock with zero setup and hold TNS, with reported Fmax of 82.365 MHz for the 75.002 MHz diagnostic clock, 159.037 MHz for the 75 MHz system clock, and 637.577 MHz for the 300 MHz fast DDR clock, while parallel placement options 1, 2, and 4 failed timing and were excluded from hardware testing. Write-DQ/DQS bootstrap exhaustively searched the complete delay range on both byte lanes, and both lane logs ended with all-zero pass maps and `delays: -`; final read leveling also found no valid window. Passive counters reached 322,709 read-delay operations, 2,044 write-delay operations, and 1,891,149 direct DFI commands before calibration returned control to the hardware controller. The deterministic DDR test then failed immediately at word 0 with expected `0x510c4619` and observed `0xffffffff`, terminal stage `0x80010002`, failure `0x00010002`, and feature bitmap `0x1`, recording initialization only, so DDR verification and runtime DDR code execution were not reached. Clock/reset status remained `0x00000011`, and Tang-Control matched all 252 FPGA requests with responses and reported zero drops, timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows. Exhaustive read and write tap selection is now excluded as the remaining cause.
+
+#### Next Steps:
+
+Investigate X4 write serializer ordering, the DQS-to-DQ phase relationship, and command/data cycle alignment, which together with the preceding diagnostic's stable partial pattern at the default write delay form the next failure boundary.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 7 COMMIT Unreleased 2026-09-28T11:09:55-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Separate temporal serializer ordering from basic DQ drive and read capture by writing complementary phase-invariant BL8 patterns to both DDR byte lanes.
+
+#### Outcome:
+
+Revision-C artifact `5cbc9bdf0b23d4f2c8e4b1712b33e639792ad21d1b6618e0b2053042a413f047` used diagnostic ABI 1.6 and wrote complementary phase-invariant patterns `0xa55aa55a` and `0x5aa55aa5`; repeating each 16-bit half on all four DFI phases holds every physical DQ pin constant throughout the BL8 burst, making the result independent of temporal serializer ordering. The image size was 4,524,028 bytes and the upload/readback CRC32 was `0x352e295c`. Gowin placement option 3 met every named clock with zero setup and hold TNS, with reported Fmax of 78.523 MHz for the 75.002 MHz diagnostic clock, 169.249 MHz for the 75 MHz system clock, and 680.851 MHz for the 300 MHz fast DDR clock, while parallel placement options 1, 2, and 4 failed timing and were excluded from hardware testing. Both complementary patterns matched exactly on both byte lanes, each producing exact-match masks `0x0000ffff`, minimum error counts of zero, and a first exact coordinate at bitslip 0/read delay 0 for both lanes; Pattern A produced 257 exact samples on lane 0 and 267 on lane 1, and Pattern B produced 258 and 277. The best captured Pattern-A phase words were exactly `0xa55aa55a`, the complementary comparison toggled all 64 burst bits in each lane, and the diagnostic reached terminal stage `0x800000d3` with failure 0 and feature bitmap `0x1f`. Clock/reset status remained `0x00000011`, and Tang-Control matched all 35 FPGA requests with responses and reported zero drops, timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows. DDR command/write strobe timing, DQS activity, per-pin DQ drive, and the read path are therefore viable at 75 MHz/X4, isolating the failure to temporal BL8 data ordering or cycle-boundary handling; the device-side diagnostic passed, and no explicit user acceptance was recorded.
+
+#### Next Steps:
+
+Map each of the eight write serializer slots to its observed read slot with a walking temporal beat.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
+
+## 8 COMMIT Unreleased 2026-09-28T11:18:43-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Map each of the eight BL8 write serializer slots to its observed read slot using a walking temporal beat.
+
+#### Outcome:
+
+Revision-C artifact `f49b7179be2a9a133eec48a6cb3f1d1a1233ae856316ed6712521bd127ad4b4f` used diagnostic ABI 1.7 and independently wrote `0xffff` into each of the eight BL8 temporal slots while holding every other slot at zero; its size was 4,492,284 bytes and Tang-Control verified upload/readback CRC32 `0x726550b9`. Gowin placement option 3 met every named clock with zero setup and hold TNS, with reported Fmax of 84.939 MHz for the 75.002 MHz diagnostic clock, 163.223 MHz for the 75 MHz system clock, and 715.563 MHz for the 300 MHz fast DDR clock, while placement options 1, 2, and 4 failed setup timing and were excluded from hardware testing. Every one of the eight writes produced a detected read burst on both byte lanes (`0x0000ffff`), but no write returned as an exact one-slot pulse (`0x00000000`); total error counts were 100 bits on lane 0 and 112 bits on lane 1, terminal stage was `0x800000d4`, failure was `0x00060003`, and the feature bitmap was `0x7` (JEDEC initialization plus all-slot burst detection on both lanes). The result is not a simple permutation: write slots 0 and 1 read back as all zero, later slots produced partial byte values repeated across multiple read positions, and only write slot 4 produced a full `0xff` byte, duplicated at lane-0 read slots 4 and 6. Clock/reset status remained `0x00000011`, with zero reported transport CRC errors or malformed requests. Together with ABI 1.6, this excludes dead pins, missing strobes, and a fixed BL8 slot permutation. Gowin's `OSER8_MEM` documentation identifies its default `HWL="false"` behavior as making internal `d_up1` one cycle ahead of `d_up0`, with `HWL="true"` aligning them, and the GW5 X4 PHY currently leaves this parameter at its default.
+
+#### Next Steps:
+
+Set `HWL="true"` on the X4 memory serializers and rerun the temporal map before changing delay training or controller logic.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 9 COMMIT Unreleased 2026-09-28T11:26:19-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Test whether setting `HWL="true"` on all quarter-rate `OSER8_MEM` serializers corrects the X4 temporal cycle-boundary corruption.
+
+#### Outcome:
+
+Revision-C artifact `8c428be184c75ef6cfec890aa784d6321edb6b318222ef57df7713335715d7c6` reran ABI 1.7 with `HWL="true"` on all quarter-rate `OSER8_MEM` instances; its size was 4,492,284 bytes and Tang-Control verified upload/readback CRC32 `0x0c4c2300`. Placement option 3 met every named clock with zero setup and hold TNS, with reported Fmax of 84.939 MHz for the 75.002 MHz diagnostic clock, 163.223 MHz for the 75 MHz system clock, and 715.563 MHz for the 300 MHz fast DDR clock, while placement options 1, 2, and 4 failed setup timing and were excluded from hardware testing. All eight writes again produced read bursts on both lanes, but the response changed from irregular corruption to a structured cycle-boundary result: lane 0 returned write slot 5 exactly (exact mask `0x20`), write slots 0 through 5 all placed a full byte at read slot 5, and slots 6 and 7 spilled into repeating even/odd read positions, while lane 1 had no exact write and only write slot 7 produced full bytes, in the odd read positions. Packed total errors were 152 bits on lane 0 and 146 bits on lane 1. Terminal stage was `0x800000d4`, failure was `0x00060003`, feature bitmap was `0x7`, clock/reset status was `0x00000011`, and transport error counters remained zero. The strong, repeatable change confirms that `HWL` controls the failing X4 boundary, but aligning only the serializers leaves the associated `DQS` primitive at its default `HWL="false"`, although that primitive exposes the same HWL mode and its simulation model changes the X4 update phase with it.
+
+#### Next Steps:
+
+Match the `DQS` primitive to `HWL="true"` as a one-variable change and repeat the temporal map.
+
+#### Files Modified:
+
+- third_party/litedram/litedram/phy/gw5ddrphy.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 10 COMMIT Unreleased 2026-09-28T11:30:52-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Test whether matching the quarter-rate `DQS` primitive to `HWL="true"` alongside the aligned `OSER8_MEM` serializers produces a valid X4 temporal map.
+
+#### Outcome:
+
+Revision-C artifact `d67f35d179f882312ceeb942ce694055596a89713a5ae0bd759e44518fc00baa` reran ABI 1.7 with `HWL="true"` on the quarter-rate `DQS` primitives as well as all `OSER8_MEM` instances; its size was 4,492,284 bytes and Tang-Control verified upload/readback CRC32 `0x7175654e`. Placement option 3 met every named clock with zero setup and hold TNS, with reported Fmax remaining 84.939 MHz for the diagnostic clock, 163.223 MHz for the system clock, and 715.563 MHz for the 300 MHz fast DDR clock, while placement options 1, 2, and 4 failed timing and were not deployed. Matching the DQS primitive to HWL mode removed read-burst detections on both lanes (burst mask `0x0000`); the first six walking writes read as all zero, write slot 6 returned exactly on lane 0/read slot 6, and write slot 7 produced full lane-1 bytes in the odd positions. The exact-mask result was lane 0 `0x40` and lane 1 `0x00`, total errors were 56 and 96 bits, terminal stage was `0x800000d4`, failure was `0x00060003`, feature bitmap was `0x1`, clock/reset status was `0x00000011`, and transport errors remained zero. `DQS.HWL="true"` is therefore excluded for the present X4 read-gate design, and the working DQS primitive mode is its default `false`.
+
+#### Next Steps:
+
+Restore the `DQS` primitive to `HWL="false"` and isolate `HWL="true"` to the DQ serializers only, keeping the DQS and constant-zero DM serializers at their original mode so that data half-word alignment is tested without also moving strobe or mask timing.
+
+#### Files Modified:
+
+- third_party/litedram/litedram/phy/gw5ddrphy.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 11 COMMIT Unreleased 2026-09-28T11:36:01-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Test whether applying `HWL="true"` only to the sixteen quarter-rate DQ serializers produces a valid X4 temporal map.
+
+#### Outcome:
+
+Revision-C artifact `959d27986aa89974dda4996858b2fb0f1cc3428f60a9ae58bb8e5113ddedea61` reran ABI 1.7 with `HWL="true"` only on the sixteen quarter-rate DQ serializers, while both DQS primitives, both DQS serializers, and the constant-zero DM serializers retained `HWL="false"`; Tang-Control verified upload/readback CRC32 `0x2b4c6443` for the 4,492,284-byte image. Placement option 3 met every named clock with zero setup and hold TNS, while options 1, 2, and 4 failed setup timing and were excluded. Read-burst detection remained perfect for all eight writes on both lanes (`0x0000ffff`), but every captured DFI word was `0xffffffff`: exact masks were zero, both mapping tables were `0xffffffff`, and each lane accumulated 448 bit errors. Terminal stage was `0x800000d4`, failure was `0x00060003`, feature bitmap was `0x7`, and clock/reset status was `0x00000011`. Aligning DQ while leaving the DQS serializer at its default therefore breaks the write drive/strobe relationship completely. With the DQS primitive fixed at its proven `HWL="false"`, three of the four DQS-serializer/DQ-serializer combinations have now been measured: `false/false` is irregular, `true/true` is structured but incomplete, and `false/true` reads all ones.
+
+#### Next Steps:
+
+Measure the remaining complementary `true/false` combination by aligning only the DQS output serializer and restoring the DQ and DM serializers to their default mode.
+
+#### Files Modified:
+
+- third_party/litedram/litedram/phy/gw5ddrphy.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 12 COMMIT Unreleased 2026-09-28T11:40:29-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Complete the X4 output-serializer HWL matrix by applying `HWL="true"` only to the DQS output serializer.
+
+#### Outcome:
+
+Revision-C artifact `6335c375cd5ec99f587aec3c9bf2d35e226c24f9f8c33d8bd1a8aa19795f9b22` completed the fourth DQS-serializer/DQ-serializer HWL pairing with the DQS primitive fixed at its proven `HWL="false"`: DQS output serialization used `HWL="true"`, while DM and DQ serialization used `HWL="false"`. The image was 4,492,284 bytes and Tang-Control verified upload/readback CRC32 `0x2a7131fb`. Placement option 3 met every named clock with zero setup and hold TNS, with reported Fmax remaining 84.939 MHz for the diagnostic clock, 163.223 MHz for the system clock, and 715.563 MHz for the 300 MHz fast DDR clock, while placement options 1, 2, and 4 failed setup timing and were excluded from deployment. All eight writes produced read bursts on both lanes (`0x0000ffff`), but none returned exactly (`0x00000000`); lane 0 accumulated 121 bit errors and lane 1 accumulated 132, the packed temporal maps were lane 0 `0x00000055` and `0x00800000` with lane 1 remaining zero, and the raw captures showed repeated even-position data and later spill rather than a valid BL8 sequence. Terminal stage was `0x800000d4`, failure was `0x00060003`, feature bitmap was `0x7`, clock/reset status was `0x00000011`, and transport errors remained zero. The complete output-serializer HWL matrix is therefore hardware measured: default/default is irregular, aligned/aligned is structured but incomplete, default/aligned reads all ones, and aligned/default duplicates even positions without an exact result, and the DQS primitive aligned mode is also excluded because it suppresses burst detection.
+
+#### Next Steps:
+
+Restore the most promising aligned/aligned output mode with the DQS primitive at its default, then scan all 256 dynamic write-delay taps using two complementary changing patterns at each tap to prevent stale-data matches.
+
+#### Files Modified:
+
+- third_party/litedram/litedram/phy/gw5ddrphy.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 13 COMMIT Unreleased 2026-09-28T11:49:54-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Determine whether a narrow write-delay window exists in the aligned/aligned X4 output mode by scanning every dynamic write-delay tap with complementary changing patterns.
+
+#### Outcome:
+
+Revision-C ABI 1.8 artifact `7c2467849a0e9c4fcbf0b7d929bc5ca99cf67235676830eee44e706278b06a4f` restored the most promising output mode, in which the DQS primitive retained `HWL="false"` while the DQS, DM, and DQ `OSER8_MEM` instances used `HWL="true"`; its size was 4,539,900 bytes and Tang-Control verified upload/readback CRC32 `0xbc311ca5`. Placement option 3 was again the only eligible build, with zero setup and hold TNS on every named clock and reported Fmax of 76.641 MHz for the 75.002 MHz diagnostic clock, 152.861 MHz for the 50 MHz input clock, 686.989 MHz for the 300 MHz fast DDR clock, and 179.866 MHz for the 75 MHz system clock; options 1 and 2 failed `sys_clk` setup, and option 4 failed both `sys_clk` and `main_clkout` setup. The diagnostic tested both complementary, phase-changing BL8 patterns at every one of the 256 dynamic write-delay taps on each byte lane, requiring both consecutive writes to match so that stale DDR contents could not produce a false pass. Both lanes detected both read bursts at all 256 taps (`0x01000100`), but neither found an exact tap (`0x00000000`), and both first-exact values were `0xffffffff`. The best result remained tap 0 on both lanes, with 56 combined bit errors on lane 0 and 64 on lane 1 (best errors `0x00400038`, best taps `0x00000000`), and the best raw captures were still strongly repeated across phases rather than becoming more or less correct as delay moved. The test executed all 2,055 expected DFI commands and 1,022 write-delay actions, reaching terminal stage `0x800000d5` with failure `0x00070003`, feature bitmap `0x7`, clock/reset status `0x00000011`, and all Tang-Control transport error counters at zero. This excludes a narrow write-delay window as the cause and leaves the temporal generation and ordering of the X4 serialized write burst, rather than basic DDR pin activity or read capture, as the remaining defect.
+
+#### Next Steps:
+
+Investigate the temporal generation and ordering of the X4 serialized write burst, keeping the DQS primitive at `HWL="false"` and the write-delay scan instrumentation available for validation.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- software/gate1/main.c
+- third_party/litedram/litedram/phy/gw5ddrphy.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
+
+## 14 COMMIT Unreleased 2026-09-28T12:14:20-07:00
+
+#### Coming From:
+
+None.
+
+#### Purpose:
+
+Establish from exact-board vendor sources the physical DDR3 interface width and controller configuration of the Tang Console 138K.
+
+#### Outcome:
+
+Sipeed's Tang Mega 138K example repository at commit `06e7d8b118d345915ab6f257b7c22226f81575cd` contains an official DDR memory test applicable to the Tang Console 138K; its project targets `GW5AST-LV138PG484AC1/I0`, its checked-in generated IP targets device revision C, and its README directs revision-B users to change the device model and regenerate all Gowin-specific IP. The exact PG484 SOM schematic `tang_mega_138k_30354_Schematics..pdf`, SHA-256 `326c45a7ae05e990d5f885fba6ec9b589d966941aa3c00f7d43122d99c068af7`, shows two Hynix `H5TQ4G63EFR-RDC` x16 DDR3 devices and distinct data nets for all 32 bits, and Sipeed's exact-board constraints independently bind `ddr_dq[31:0]`, `ddr_dqs[3:0]`, and `ddr_dm[3:0]` to the PG484 package. Sipeed's controller configuration uses `DQ_WIDTH=3`, which its generated parameters resolve to a 32-bit physical data bus, with `MEMORY_CLK=400` and a `1:4` clock ratio, and the reference top sets `DRAM_NUM=2` and exposes a 256-bit native application read/write datapath, corresponding to four physical byte lanes and a 3.2 GB/s theoretical peak transfer rate at 800 MT/s. The prior x16 assumption came from the LiteX Tang Console platform and nand2mario's DDR framebuffer reference, both of which expose only the first x16 DDR3 device with two DQS/DM lanes; that is a deliberately reduced, proven configuration rather than a PG484 routing limitation. No vendor-controller image was built or deployed, and no new hardware result is claimed by this documentary investigation.
+
+#### Next Steps:
+
+Target Sipeed's full x32/four-lane Gowin DDR3 controller for Tang-PSX, regenerate the IP for the project's revision-B device and Gowin 1.9.11.03 environment, and bridge its native application port into the AE350 system.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

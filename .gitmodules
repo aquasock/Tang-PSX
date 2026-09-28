@@ -1,0 +1,30 @@
+[submodule "third_party/migen"]
+	path = third_party/migen
+	url = https://github.com/m-labs/migen.git
+[submodule "third_party/litex"]
+	path = third_party/litex
+	url = https://github.com/enjoy-digital/litex.git
+[submodule "third_party/litedram"]
+	path = third_party/litedram
+	url = https://github.com/enjoy-digital/litedram.git
+[submodule "third_party/litex-boards"]
+	path = third_party/litex-boards
+	url = https://github.com/litex-hub/litex-boards.git
+[submodule "third_party/litepcie"]
+	path = third_party/litepcie
+	url = https://github.com/enjoy-digital/litepcie.git
+[submodule "third_party/pythondata-software-picolibc"]
+	path = third_party/pythondata-software-picolibc
+	url = https://github.com/litex-hub/pythondata-software-picolibc.git
+[submodule "third_party/pythondata-software-compiler_rt"]
+	path = third_party/pythondata-software-compiler_rt
+	url = https://github.com/litex-hub/pythondata-software-compiler_rt.git
+[submodule "third_party/tang-phosphor"]
+	path = third_party/tang-phosphor
+	url = https://github.com/aquasock/Tang-Phosphor.git
+[submodule "third_party/lightrec"]
+	path = third_party/lightrec
+	url = https://github.com/pcercuei/lightrec.git
+[submodule "third_party/gnu-lightning"]
+	path = third_party/gnu-lightning
+	url = https://github.com/notaz/gnu_lightning.git
