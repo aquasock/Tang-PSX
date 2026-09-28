@@ -435,3 +435,33 @@ None.
 - User Test: N/A
 
 ---
+
+## 15 COMMIT Unreleased 2026-09-28T12:43:27-07:00
+
+#### Coming From:
+
+Unreleased 04da885
+
+#### Purpose:
+
+Record the unlogged diagnostic ABI 1.9 build, which tested Gowin-generated-interface-style X4 DDR primitive settings, and the resulting project direction.
+
+#### Outcome:
+
+The ABI 1.9 experiment set `HWL="true"` on the two quarter-rate `DQS` primitives and `HWL="false"` on all twenty `OSER8_MEM` instances. It also clocked the DQS output serializers from `DQSW270` and the DQ/DM serializers from `DQSW`, which the source comments describe as matching Gowin's generated GW5AST X4 DDR3 interface. The gateware and firmware sources, including debug identifier `0x00010009` in `gateware/ae350_gate1.py`, were committed without a log entry in `04da885`. The PHY changes exist only as uncommitted edits to `litedram/phy/gw5ddrphy.py` and `test/test_gw5ddrphy.py` in the `third_party/litedram` submodule working tree, which is pinned at upstream `c454a44`. The build targeted `GW5AST-138C` for `GW5AST-LV138PG484AC1/I0`, and every placement variant failed setup timing. Option 1 had `sys_clk` TNS -8.830 ns over 28 endpoints, option 2 had -15.123 ns over 34, option 3 had -0.230 ns over 2, and option 4 had `sys_clk` TNS -355.620 ns over 303 endpoints plus `main_clkout` TNS -7.425 ns over 3. All other named clocks and all hold checks were clean, and the option-3 image SHA-256 was `b6ce79b30857bf691e61c78b65ade74c1fc24b86d7c7f385f0891ed94ed19453`. No variant was deployed, so the last hardware-proven state remains ABI 1.8 artifact `7c2467849a0e9c4fcbf0b7d929bc5ca99cf67235676830eee44e706278b06a4f` from entry 13, and the ABI 1.9 primitive settings have no hardware result. A user-supplied photograph of the installed FPGA shows the markings `GW5AST-LV138PG484AC1/I0`, `2518CA0N`, and `TS0E44.00`, whose fifth lot/date character identifies device revision C and corrects the `2518CAON` transcription in entry 1. The user therefore directed that Tang-PSX target revision C, the revision of the physical board, which matches every artifact deployed in entries 1 through 13 and Sipeed's generated DDR3 IP. This supersedes the entry 14 plan to regenerate that IP for revision B, and the stale revision-B line in `.ai/core.md` is left for the user to correct separately. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, and validated this entry against the template. The audit found that settled entries 1 through 14 use `None.` rather than a base reference under Coming From and that the Current Log Conformance section of `.ai/core-syntax.md` still names the Tang-Phosphor log; neither was edited.
+
+#### Next Steps:
+
+Import Sipeed's revision-C x32 Gowin DDR3 controller IP and exact PG484 32-DQ, four-DQS, and four-DM pin mapping, and verify or regenerate the IP with Gowin EDA 1.9.11.03. Build a standalone image that contains only the controller, a four-lane fabric memory test, and Tang-Control-readable status, and prove it on hardware before bridging the controller's 256-bit native port into the AE350 system.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
