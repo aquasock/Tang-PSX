@@ -12,7 +12,7 @@ PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$PROJECT_ROOT/scripts/env.sh"
 
 CONFIG_DIR="$PROJECT_ROOT/gateware/ddr3_vendor"
-IP_DIR="${1:-$PROJECT_ROOT/build/ddr3-vendor/ip}"
+IP_DIR=$(realpath -m "${1:-$PROJECT_ROOT/build/ddr3-vendor/ip}")
 
 rm -rf "$IP_DIR"
 mkdir -p "$IP_DIR/project" "$IP_DIR/gowin_pll"

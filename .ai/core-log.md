@@ -508,3 +508,42 @@ Reevaluate the plan with the user before continuing. The standing direction is t
 - User Test: PASS
 
 ---
+
+## 17 COMMIT Unreleased 2026-09-28T14:04:13-07:00
+
+#### Coming From:
+
+Unreleased 2402721
+
+#### Purpose:
+
+Connect the AE350 to the full x32 DDR3 array through the proven Gowin controller and rerun the Gate 1 checks from the AE350.
+
+#### Outcome:
+
+The AE350 now uses the full 1 GiB DDR3 through the proven Gowin controller, and every Gate 1 check passed on hardware with the 75 MHz system clock. The Gowin controller from entry 16 replaced LiteDRAM's controller and PHY in the Gate 1 SoC, and the user-selected direct path was used. The AE350's 64-bit RAM AHB port reaches memory through LiteX's `AE350RAMBridge`, then a LiteDRAM 75-to-100 MHz native-port crossing with a registered read-data stage, then the new `gateware/ddr3_vendor/gowin_ddr3_native.sv` adapter. That adapter holds each command until the Gowin controller can take it, pairing write data with its command in one cycle, and issues reads only against guaranteed return-FIFO credit. `gateware/gowin_ddr3.py` wraps the regenerated controller, its 400 MHz PLL, and the x32 PG484 pin and placement constraints for LiteX, and main RAM is mapped at `0x40000000`. The old experiment was removed: the LiteDRAM DFI command injector, the calibration counters, the PHY-scan CSRs and firmware, and the `liblitedram` link. The `third_party/litedram` working-tree edits were left untouched. The Gate 1 diagnostic ABI is now 2.0 and is documented in `README.md`. The Verilator testbench `gateware/sim/gowin_ddr3_native_tb.sv` passed 20,000 randomized commands, including byte-masked writes and write data that trails its command, and it failed as intended when mask polarity or read credit was deliberately broken. Removing LiteDRAM also silently disabled LiteX's registered CSR bridge, which LiteX enables only when a LiteDRAM core exists. That left every placement variant failing `sys_clk` setup on CSR and DDR read-return paths. A crossbar interconnect made timing worse and was reverted; forcing the registered bridge and adding the read-data register stage fixed it. The first deployed image met timing only with option 4, but it stopped at stage `0x80010001` because the CPU-visible DDR3 status CSR read 0 while the diagnostic copy showed calibration complete. The cause was that `CSRStatus` fields were left undriven after the whole status word was assigned; the fields are now driven directly. In the rebuild only placement option 2 met all setup and hold timing, with `sys_clk` Fmax 76.180 MHz and `ddr_clk` Fmax 131.217 MHz. Options 1, 3, and 4 failed `sys_clk` setup with TNS -26.232 ns over 41 endpoints, -0.742 ns over 1, and -9.758 ns over 27, with the remaining paths in LiteX's AE350 RAM-bridge logic. The option-2 image was 4,952,572 bytes with SHA-256 `bb86dfabab492a7a4aafc2389037e72b753e1c2102c641d7750bbe649b9b110f`, and Tang-Control verified its SD readback CRC32 `0x3dc91a28`. On hardware, calibration completed in 28.6 ms and firmware reached final stage `0x80000001` with failure 0 and feature bitmap `0x3f`. It verified 262,144 fixed-pattern words with checksum `0xd42cc044`, walked every address bit across 1 GiB, verified byte and halfword stores into all 32 lanes of the controller word, and verified interleaved read-after-write. Runtime-written code in DDR returned 42 and then 99 after `fence rw,rw` plus `fence.i` (`0x002a0063`), and the read-return overflow flag stayed clear. Clock status was `0x0000001d`, the run took `0x1cbd0234` AE350 cycles, and Tang-Control matched all 25 requests with zero transport errors. The user accepted the result. The path issues one 32-bit access at a time, about 1 µs per access, so performance is unproven. The AE350 caches are neither enabled nor checked, so the `fence.i` result does not prove cache coherency. Only one of four placement variants meets 75 MHz. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, and validated this entry against the template.
+
+#### Next Steps:
+
+Reevaluate with the user before continuing. Open work includes enabling the AE350 caches and proving code coherency with them on, improving DDR access throughput and the thin 75 MHz `sys_clk` margin, and the R3000A and GTE tests that complete Gate 1.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/ddr3_vendor/gowin_ddr3_native.sv
+- gateware/gowin_ddr3.py
+- gateware/sim/gowin_ddr3_native_tb.sv
+- scripts/build-gate1.sh
+- scripts/gen-ddr3-ip.sh
+- scripts/gowin-timing-summary.py
+- software/gate1/Makefile
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

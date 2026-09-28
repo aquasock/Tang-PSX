@@ -52,7 +52,8 @@ def main():
         violations = {k: v for k, v in tns.items() if v[0] < 0}
         verdict = "MET" if not violations else "FAILED"
         failed |= bool(violations)
-        print(f"{build.name}: timing {verdict}")
+        label = build.parent.name if build.name == "gateware" else build.name
+        print(f"{label}: timing {verdict}")
         for clock, (constraint, actual) in fmax.items():
             print(f"  {clock:14s} constraint {constraint:>14s}  Fmax {actual}")
         for (clock, kind), (value, endpoints) in violations.items():

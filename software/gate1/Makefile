@@ -4,7 +4,7 @@ include ../include/generated/variables.mak
 include $(SOC_DIRECTORY)/software/common.mak
 
 OBJECTS = main.o crt0.o
-LIBS = libc libcompiler_rt libbase liblitedram
+LIBS = libc libcompiler_rt libbase
 LIBRARY_ARCHIVES = $(foreach lib,$(LIBS),../$(lib)/$(lib).a)
 
 all: bios.bin

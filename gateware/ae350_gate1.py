@@ -6,7 +6,7 @@ import argparse
 import os
 from pathlib import Path
 
-from migen import Cat, Case, ClockDomain, ClockSignal, If, Instance, Mux, Replicate, ResetSignal, Signal
+from migen import Cat, Case, ClockDomain, ClockSignal, If, Instance, Mux, ResetSignal, Signal
 from migen.genlib.cdc import MultiReg
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
@@ -14,95 +14,19 @@ from litex.gen import LiteXModule
 from litex.build.generic_platform import IOStandard
 from litex.soc.cores.clock.gowin_gw5a import GW5APLL
 from litex.soc.integration.builder import Builder
+from litex.soc.integration.soc import SoCRegion
 from litex.soc.interconnect import ahb as litex_ahb
-from litex.soc.interconnect.csr import AutoCSR, CSR, CSRField, CSRStatus, CSRStorage
+from litex.soc.interconnect.csr import AutoCSR, CSRStorage
 from litex.soc.cores.cpu.gowin_ae350.core import GowinAE350
 
-import litedram.dfii as litedram_dfii
 from litex_boards.targets import sipeed_tang_console as tang_console
+
+import gowin_ddr3
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PHOSPHOR = ROOT / "third_party" / "tang-phosphor"
-
-
-class Gate1PhaseInjector(LiteXModule, AutoCSR):
-    """LiteDRAM software DFI phase with a registered command issue path.
-
-    The upstream PhaseInjector drives the physical DFI command directly from
-    the CSR address decoder. At 75 MHz that creates a real CPU-CSR-to-OSER
-    path. Capturing the already-programmed command payload when the issue CSR
-    is written adds one system cycle to software commands and leaves the
-    hardware-controller DFI path untouched.
-    """
-
-    def __init__(self, phase):
-        self._command = CSRStorage(fields=[
-            CSRField("cs",        size=1, description="DFI chip select bus"),
-            CSRField("we",        size=1, description="DFI write enable bus"),
-            CSRField("cas",       size=1, description="DFI column address strobe bus"),
-            CSRField("ras",       size=1, description="DFI row address strobe bus"),
-            CSRField("wren",      size=1, description="DFI write data enable bus"),
-            CSRField("rden",      size=1, description="DFI read data enable bus"),
-            CSRField("cs_top",    size=1, description="Top clam-shell chip select"),
-            CSRField("cs_bottom", size=1, description="Bottom clam-shell chip select"),
-        ], description="Control DFI signals on a single phase")
-        self._command_issue = CSR()
-        self._address = CSRStorage(len(phase.address), reset_less=True,
-            description="DFI address bus")
-        self._baddress = CSRStorage(len(phase.bank), reset_less=True,
-            description="DFI bank address bus")
-        self._wrdata = CSRStorage(len(phase.wrdata), reset_less=True,
-            description="DFI write data bus")
-        self._rddata = CSRStatus(len(phase.rddata), description="DFI read data bus")
-
-        issue = Signal()
-        command = Signal(8)
-        address = Signal(len(phase.address), reset_less=True)
-        baddress = Signal(len(phase.bank), reset_less=True)
-        wrdata = Signal(len(phase.wrdata), reset_less=True)
-
-        self.sync += [
-            issue.eq(self._command_issue.wr_stb),
-            If(self._command_issue.wr_stb,
-                command.eq(self._command.storage),
-                address.eq(self._address.storage),
-                baddress.eq(self._baddress.storage),
-            ),
-            If(self._wrdata.wr_stb,
-                wrdata.eq(self._wrdata.storage),
-            ),
-            If(phase.rddata_valid, self._rddata.status.eq(phase.rddata)),
-        ]
-        self.comb += [
-            If(issue,
-                If(command[6],
-                    phase.cs_n.eq(2),
-                ).Elif(command[7],
-                    phase.cs_n.eq(1),
-                ).Else(
-                    phase.cs_n.eq(Replicate(~command[0], len(phase.cs_n))),
-                ),
-                phase.we_n.eq(~command[1]),
-                phase.cas_n.eq(~command[2]),
-                phase.ras_n.eq(~command[3]),
-            ).Else(
-                phase.cs_n.eq(Replicate(1, len(phase.cs_n))),
-                phase.we_n.eq(1),
-                phase.cas_n.eq(1),
-                phase.ras_n.eq(1),
-            ),
-            phase.address.eq(address),
-            phase.bank.eq(baddress),
-            phase.wrdata_en.eq(issue & command[4]),
-            phase.rddata_en.eq(issue & command[5]),
-            phase.wrdata.eq(wrdata),
-            phase.wrdata_mask.eq(0),
-        ]
-
-
-# DFIInjector resolves this module global when LiteDRAMCore is constructed.
-litedram_dfii.PhaseInjector = Gate1PhaseInjector
+MAIN_RAM_BASE = 0x4000_0000
 
 
 class Gate1PeripheralAHB2Wishbone(LiteXModule):
@@ -218,32 +142,28 @@ class Gate1PeripheralAHB2Wishbone(LiteXModule):
 
 
 class Gate1CRG(LiteXModule):
-    """Console 138K DDR clocks plus the AE350's dedicated PLL."""
+    """Board clock, 75 MHz system PLL, and the AE350's dedicated PLL.
+
+    The DDR3 controller owns its 400 MHz PLL and 100 MHz user clock
+    (gowin_ddr3.GowinDDR3); the system domain reaches it through a native-port
+    clock-domain crossing.
+    """
 
     def __init__(self, platform, sys_clk_freq, with_sdram=False,
             sdram_rate="1:1", with_ddr3=False, ddr3_rate="1:2",
             with_video_pll=False, with_pcie=False, without_pll=False):
-        assert with_ddr3 and ddr3_rate in ("1:2", "1:4")
-        assert not with_sdram and not with_video_pll and not with_pcie
+        assert not with_ddr3 and not with_sdram and not with_video_pll and not with_pcie
         assert not without_pll
 
-        ddr3_nphases = int(ddr3_rate[-1])
-
         self.rst = Signal()
-        self.stop = Signal()
-        self.reset = Signal()
         self.cd_por = ClockDomain()
-        self.cd_init = ClockDomain()
         self.cd_sys = ClockDomain()
-        cd_ddr = ClockDomain(f"sys{ddr3_nphases}x")
-        cd_ddr_i = ClockDomain(f"sys{ddr3_nphases}x_i")
-        setattr(self, f"cd_sys{ddr3_nphases}x", cd_ddr)
-        setattr(self, f"cd_sys{ddr3_nphases}x_i", cd_ddr_i)
         self.cd_cpu = ClockDomain(reset_less=True)
         self.cd_diag = ClockDomain()
         self.cpu_pll_lock = cpu_pll_lock = Signal()
+        self.ddr_rst = Signal()
 
-        clk50 = platform.request("clk50")
+        self.clk50 = clk50 = platform.request("clk50")
         # Console EX_KEY.0 is active-low. The upstream target currently treats
         # this resource as active-high, which permanently reset its PLL.
         self.external_reset_n = reset_n = platform.request("rst")
@@ -253,6 +173,7 @@ class Gate1CRG(LiteXModule):
         self.comb += [
             self.cd_por.clk.eq(clk50),
             por_done.eq(por_count == 0),
+            self.ddr_rst.eq(~por_done | ~reset_n),
         ]
         self.sync.por += If(~por_done, por_count.eq(por_count - 1))
 
@@ -261,35 +182,14 @@ class Gate1CRG(LiteXModule):
         pll.vco_freq_range = (650e6, 1300e6)
         self.comb += pll.reset.eq(~por_done | ~reset_n | self.rst)
         pll.register_clkin(clk50, 50e6)
-        pll.create_clkout(cd_ddr_i, ddr3_nphases * sys_clk_freq)
-
-        self.specials += [
-            Instance("DHCE",
-                i_CLKIN=cd_ddr_i.clk,
-                i_CEN=self.stop,
-                o_CLKOUT=cd_ddr.clk,
-            ),
-            Instance("CLKDIV",
-                p_DIV_MODE=str(ddr3_nphases),
-                i_CALIB=0,
-                i_HCLKIN=cd_ddr.clk,
-                i_RESETN=~self.reset,
-                o_CLKOUT=self.cd_sys.clk,
-            ),
-            AsyncResetSynchronizer(self.cd_sys, ~pll.locked | self.reset),
-        ]
-        self.comb += [
-            self.cd_init.clk.eq(clk50),
-            self.cd_init.rst.eq(pll.reset),
-        ]
-
+        pll.create_clkout(self.cd_sys, sys_clk_freq)
+        # Constrain the PLL output net, which synthesis keeps; the sys_clk alias
+        # is merged away.
         config = pll.compute_config()
-        ddr_clk = pll.clkouts[0].clk
-        platform.add_generated_clock_constraint(ddr_clk, clk50,
+        platform.add_generated_clock_constraint(pll.clkouts[0].clk, clk50,
             multiply_by=config["fdiv"] * config["mdiv"],
-            divide_by=config["idiv"] * config["odiv0"])
-        platform.add_generated_clock_constraint(self.cd_sys.clk,
-            ddr_clk, divide_by=ddr3_nphases)
+            divide_by=config["idiv"] * config["odiv0"],
+            name="sys_clk")
 
         platform.add_source(str(PHOSPHOR / "src/ae350/ae350_pll.v"))
         self.specials += Instance("ae350_pll",
@@ -326,18 +226,9 @@ class Gate1Status(LiteXModule, AutoCSR):
         self._cycles = CSRStorage(32, reset=0, description="Probe cycle count")
         self._features = CSRStorage(32, reset=0, description="Passed feature bitmap")
         self._log_head = CSRStorage(32, reset=0, description="Firmware log byte count")
-        self._phy_burst_masks = CSRStorage(32, reset=0,
-            description="Read-burst bitslip masks for lanes 0 and 1")
-        self._phy_burst_counts = CSRStorage(32, reset=0,
-            description="Read-burst hit counts for lanes 0 and 1")
-        self._phy_first0 = CSRStorage(32, reset=0xffffffff,
-            description="First lane-0 burst scan point")
-        self._phy_first1 = CSRStorage(32, reset=0xffffffff,
-            description="First lane-1 burst scan point")
-        self._phy_raw0 = CSRStorage(32, reset=0, description="Captured DFI phase-0 read data")
-        self._phy_raw1 = CSRStorage(32, reset=0, description="Captured DFI phase-1 read data")
-        self._phy_raw2 = CSRStorage(32, reset=0, description="Captured DFI phase-2 read data")
-        self._phy_raw3 = CSRStorage(32, reset=0, description="Captured DFI phase-3 read data")
+        self._fail_address = CSRStorage(32, reset=0, description="Address of the first failed check")
+        self._fail_expected = CSRStorage(32, reset=0, description="Expected value of the first failed check")
+        self._fail_observed = CSRStorage(32, reset=0, description="Observed value of the first failed check")
         self._log = []
         for index in range(32):
             register = CSRStorage(32, name=f"log{index}",
@@ -347,11 +238,10 @@ class Gate1Status(LiteXModule, AutoCSR):
 
 
 class Gate1SoC(tang_console.BaseSoC):
-    def __init__(self, place_option=3):
-        # Keep the conservative fabric Wishbone path while establishing the
-        # final 75 MHz PHY configuration. The direct path is revisited only
-        # after this baseline passes deterministically.
-        GowinAE350.native_memory = False
+    def __init__(self, ip_dir, place_option=3):
+        # The AE350 RAM port is bridged straight to the DDR3 native port,
+        # bypassing the SoC interconnect.
+        GowinAE350.native_memory = True
         # Select the timing-safe bridge only for the second non-bursting
         # 32-bit AHB bridge created by GowinAE350.__init__: its peripheral
         # port. Restore the module entry immediately so the deferred RAM
@@ -380,16 +270,35 @@ class Gate1SoC(tang_console.BaseSoC):
                 with_timer=True,
                 with_led_chaser=False,
                 with_buttons=False,
-                with_ddr3=True,
-                ddr3_rate="1:4",
+                with_ddr3=False,
             )
         finally:
             litex_ahb.AHB2Wishbone = upstream_ahb2wishbone
 
-        # Gate 1 performs its own deterministic DDR test and reports the first
-        # failing word/value through Tang-Control.  LiteDRAM's built-in memtest
-        # only returns pass/fail and would hide that diagnostic information.
-        self.add_constant("SDRAM_TEST_DISABLE")
+        # DDR3: Gowin controller behind the AE350's direct native memory bus.
+        self.platform.add_extension(gowin_ddr3.ddram32_io())
+        self.ddr3 = gowin_ddr3.GowinDDR3(self.platform,
+            pads   = self.platform.request("ddram32"),
+            clk50  = self.crg.clk50,
+            rst    = self.crg.ddr_rst,
+            ip_dir = ip_dir,
+        )
+        self.bus.add_region("main_ram", SoCRegion(
+            origin=MAIN_RAM_BASE, size=gowin_ddr3.SIZE, mode="rwx"))
+        self.cpu.add_memory_buses(address_width=32, data_width=gowin_ddr3.DATA_WIDTH)
+        cpu_port = self.cpu.memory_buses[0]
+        ddr_port = self.ddr3.port
+        self.comb += [
+            cpu_port.cmd.connect(ddr_port.cmd, omit={"addr"}),
+            ddr_port.cmd.addr.eq(cpu_port.cmd.addr[:gowin_ddr3.ADDRESS_BITS]),
+            cpu_port.wdata.connect(ddr_port.wdata),
+            ddr_port.rdata.connect(cpu_port.rdata),
+        ]
+        # Clock groups are exclusive, as in the controller's reference design;
+        # every crossing between them is synchronized.
+        self.platform.add_false_path_constraints(
+            self.crg.cd_sys.clk, self.crg.cd_diag.clk, self.crg.clk50,
+            self.ddr3.cd_ddr.clk, self.ddr3.memory_clk)
 
         # The shared board file describes this pin as 1.5 V even though its own
         # note says the 138K routing is 3.3 V.  AE350 makes the bank voltage
@@ -429,57 +338,34 @@ class Gate1SoC(tang_console.BaseSoC):
         transport_crc_errors = Signal(32)
         transport_bad_requests = Signal(32)
         clock_status = Signal(32)
-        training_read_steps = Signal(32)
-        training_write_steps = Signal(32)
-        training_commands = Signal(32)
-        training_lane_diag = Signal(32)
-        training_read_steps_diag = Signal(32)
-        training_write_steps_diag = Signal(32)
-        training_commands_diag = Signal(32)
+        ddr_status = Signal(3)
+        calib_time = Signal(32)
+        calib_seen = Signal()
 
-        # Observe the software-driven PHY calibration without changing the
-        # pinned LiteDRAM routine. These counters distinguish a long search
-        # from a fixed CSR access and identify whether read or write taps move.
-        read_step = (
-            self.ddrphy._rdly_dq_rst.wr_stb |
-            self.ddrphy._rdly_dq_inc.wr_stb |
-            self.ddrphy._rdly_dq_bitslip_rst.wr_stb |
-            self.ddrphy._rdly_dq_bitslip.wr_stb)
-        write_step = (
-            self.ddrphy._wdly_dq_rst.wr_stb |
-            self.ddrphy._wdly_dq_inc.wr_stb)
-        command_issue = (
-            self.sdram.dfii.pi0._command_issue.wr_stb |
-            self.sdram.dfii.pi1._command_issue.wr_stb |
-            self.sdram.dfii.pi2._command_issue.wr_stb |
-            self.sdram.dfii.pi3._command_issue.wr_stb)
-        self.sync.sys += [
-            If(read_step, training_read_steps.eq(training_read_steps + 1)),
-            If(write_step, training_write_steps.eq(training_write_steps + 1)),
-            If(command_issue, training_commands.eq(training_commands + 1)),
-        ]
-        self.specials += [
-            MultiReg(self.ddrphy._dly_sel.storage, training_lane_diag, "diag"),
-            MultiReg(training_read_steps, training_read_steps_diag, "diag"),
-            MultiReg(training_write_steps, training_write_steps_diag, "diag"),
-            MultiReg(training_commands, training_commands_diag, "diag"),
-        ]
+        # Controller state and calibration time in the diagnostic domain, which
+        # keeps running while the DDR clocks start.
+        self.specials += MultiReg(self.ddr3.status_sys, ddr_status, "diag")
+        self.sync.diag += If(~calib_seen,
+            calib_time.eq(calib_time + 1),
+            calib_seen.eq(ddr_status[0]),
+        )
 
         # Cat() preserves the intended one-bit widths.  Arithmetic shifts of
         # Migen's bitwise complement sign-extended the unused upper bits.
         self.comb += clock_status.eq(Cat(
             self.crg.cpu_pll_lock,
             ResetSignal("sys"),
-            self.crg.stop,
-            self.crg.reset,
+            ddr_status[1],
+            ddr_status[0],
             self.crg.pll.locked,
             self.cpu.reset,
             ~self.crg.external_reset_n,
+            ddr_status[2],
         ))
 
         debug_registers = {
             0x00: debug_rdata_comb.eq(0x54505831),
-            0x04: debug_rdata_comb.eq(0x00010009),
+            0x04: debug_rdata_comb.eq(0x00020000),
             0x08: debug_rdata_comb.eq(self.gate1._stage.storage),
             0x0c: debug_rdata_comb.eq(self.gate1._failure.storage),
             0x10: debug_rdata_comb.eq(self.gate1._ddr_words.storage),
@@ -491,24 +377,16 @@ class Gate1SoC(tang_console.BaseSoC):
             0x28: debug_rdata_comb.eq(transport_bad_requests),
             0x2c: debug_rdata_comb.eq(clock_status),
             0x30: debug_rdata_comb.eq(self.gate1._log_head.storage),
-            0x34: debug_rdata_comb.eq(training_lane_diag),
-            0x38: debug_rdata_comb.eq(training_read_steps_diag),
-            0x3c: debug_rdata_comb.eq(training_write_steps_diag),
-            0xc0: debug_rdata_comb.eq(training_commands_diag),
-            0xc4: debug_rdata_comb.eq(self.gate1._phy_burst_masks.storage),
-            0xc8: debug_rdata_comb.eq(self.gate1._phy_burst_counts.storage),
-            0xcc: debug_rdata_comb.eq(self.gate1._phy_first0.storage),
-            0xd0: debug_rdata_comb.eq(self.gate1._phy_first1.storage),
-            0xd4: debug_rdata_comb.eq(self.gate1._phy_raw0.storage),
-            0xd8: debug_rdata_comb.eq(self.gate1._phy_raw1.storage),
-            0xdc: debug_rdata_comb.eq(self.gate1._phy_raw2.storage),
-            0xe0: debug_rdata_comb.eq(self.gate1._phy_raw3.storage),
+            0x34: debug_rdata_comb.eq(calib_time),
+            0xc0: debug_rdata_comb.eq(self.gate1._fail_address.storage),
+            0xc4: debug_rdata_comb.eq(self.gate1._fail_expected.storage),
+            0xc8: debug_rdata_comb.eq(self.gate1._fail_observed.storage),
         }
         for index, register in enumerate(self.gate1._log):
             debug_registers[0x40 + 4*index] = debug_rdata_comb.eq(register.storage)
 
         self.comb += debug_rdata_comb.eq(0)
-        # All directly decoded Gate 1 registers are aligned below 0xe4. Decode
+        # All directly decoded Gate 1 registers are aligned below 0x100. Decode
         # only the six meaningful word-index bits instead of building 32-bit
         # equality comparators for every entry in the log ring.
         self.comb += Case(debug_address[2:8], {
@@ -554,15 +432,24 @@ class Gate1SoC(tang_console.BaseSoC):
         )
 
 
+    def add_csr_bridge(self, name="csr", origin=None, with_register=False):
+        # LiteX only registers the CSR bridge when a LiteDRAM core is present.
+        # Keep the registered bridge the LiteDRAM-based Gate 1 used, so the
+        # CSR decode is not in the same cycle as the AE350 peripheral bus.
+        super().add_csr_bridge(name=name, origin=origin, with_register=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build Tang-PSX Gate 1")
     parser.add_argument("--build", action="store_true", help="Run Gowin synthesis and place-and-route")
     parser.add_argument("--output-dir", default=str(ROOT / "build/gate1"))
+    parser.add_argument("--ip-dir", default=str(ROOT / "build/gate1-ip"),
+        help="Gowin DDR3/PLL IP generated by scripts/gen-ddr3-ip.sh")
     parser.add_argument("--place-option", type=int, default=3,
         help="Gowin placement strategy (default: 3)")
     args = parser.parse_args()
 
-    soc = Gate1SoC(place_option=args.place_option)
+    soc = Gate1SoC(ip_dir=args.ip_dir, place_option=args.place_option)
     builder = Builder(
         soc,
         output_dir=args.output_dir,
