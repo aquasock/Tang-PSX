@@ -578,3 +578,37 @@ Reevaluate with the user before continuing. The remaining Gate 1 work is the R30
 - User Test: PASS
 
 ---
+
+## 19 COMMIT Unreleased 2026-09-28T15:21:09-07:00
+
+#### Coming From:
+
+Unreleased d1f14fb
+
+#### Purpose:
+
+Close 75 MHz system-clock timing across the Gowin placement variants by removing the combinational DDR3 path into the AE350 macro, and re-verify Gate 1 on hardware.
+
+#### Outcome:
+
+Three of four placement variants now meet timing with 8 to 16 percent system-clock margin, and Gate 1 re-passed on hardware with no measurable cost to cached DDR3 read throughput. Before starting, the user set the direction for the rest of Gate 1: the PSX GTE will run in software on the AE350, R3000A emulation starts as an interpreter, and Gate 1 closes with interpreter and GTE checks against PC-generated reference vectors, loaded through a Tang-Control stream loader. The user made timing closure the first priority. In entry 18's build, every failing `sys_clk` path ran from the DDR3 Wishbone address through LiteDRAM's burst frontend and the bursting AHB bridge into the AE350 macro's RAM-port inputs, which alone take about 5 ns. The new `gateware/ae350_ram_bridge.py` provides `Gate1RAMBridge`, a copy of LiteX's `AE350RAMBridge` with a full `WishboneRegisterSlice` on the DDR3 path. That slice alone removed every path into the macro but left all four variants failing inside LiteDRAM's frontend, whose full-address merge and read-cache compares drive its 256-bit write buffer. `BurstWishbone2Native` replaced that frontend. It merges write beats and serves read beats from the fetched 256-bit word based on burst type and previous lane, with no address compares. `gateware/gowin_ddr3.py` also registers write data in the DDR3 clock domain ahead of the adapter. The Migen simulation `gateware/sim/test_ae350_ram_bridge.py` passed 7,506 beats and 3,750 checked reads covering byte-select single writes, wrapping bursts from any lane, and linear bursts crossing a native word. It failed as intended with a broken lane-boundary rule, missing byte selects, or dropped read data. Its read-invalidate-on-write and lane-replace guards are unreachable with legal bursts and remain as defensive logic. Placement options 1, 2, and 3 met all setup and hold timing with `sys_clk` Fmax 86.789, 82.805, and 85.306 MHz. Option 4 failed one `sys_clk` endpoint by 0.522 ns on a LiteX bus-arbiter path into the fabric SRAM. The tightest remaining paths are in Tang-Phosphor's `iosys_bl616` on the 75 MHz diagnostic clock. Option 3 had the best worst-case margin (+8.3 percent on the diagnostic clock, +13.7 percent `sys_clk`, +12.1 percent DDR3 user clock) and was deployed. That image was 4,809,724 bytes with SHA-256 `0a6fb6d912c7711a197142ddf83ad758a81cb34aa6361fca596fb00b71813ef2`, and Tang-Control verified its SD readback CRC32 `0x2f6a8fc7`. With firmware unchanged from entry 18, the hardware reached stage `0x80000001` with failure 0, feature bitmap `0x7f`, checksum `0xd42cc044`, JIT result `0x002a0063`, and stale-fetch probe 42, and Tang-Control matched all 49 requests with zero errors. Cached 1 MiB writes took 7,722,840 core cycles, 1.6 percent more than entry 18's 7,601,916. Cached reads took 9,338,882 cycles, effectively unchanged. The uncached counts (205,521,436 and 264,241,456) were identical to the cycle to entry 18 despite the different DDR3 path, exactly 784 and 1,008 core cycles per word. That shows uncached ROM-resident loops are instruction-fetch bound. Entry 18's uncached "3.8 MB/s and 3.0 MB/s" figures and its 27 to 28 times DDR3 speedup therefore measured caches-off instruction fetch, not DDR3 throughput; this entry corrects them. The user accepted the result. `.ai/core-reference.md` gained AE350-005 (uncached code is fetch bound), AE350-006 (AE350 RAM-port input timing), and TOOL-006 (LiteDRAM burst-frontend timing), and `README.md` describes the new bridge. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, and validated this entry and the reference file.
+
+#### Next Steps:
+
+Implement the approved loader cycle: a Tang-Control stream receiver feeding a 64 KiB block-RAM buffer, a debug-writable AE350 reset register, and a ROM loader that runs the Gate 1 self-checks and then copies, verifies, and executes CRC-checked images from DDR3, with a host tool and simulation, built across all four placement variants.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/ae350_ram_bridge.py
+- gateware/gowin_ddr3.py
+- gateware/sim/test_ae350_ram_bridge.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

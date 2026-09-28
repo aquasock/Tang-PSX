@@ -93,6 +93,9 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How do I enable, inspect, and flush the AE350 caches? | AE350 | AE350-002 |
 | Which AE350 address ranges are cached? Is the data cache write-back? | AE350 | AE350-003 |
 | What cache geometry does this board's AE350 report? Does fence.i cover the D-cache? | AE350 | AE350-004 |
+| Why do uncached AE350 benchmarks not measure memory speed? | AE350 | AE350-005 |
+| How much of a system-clock cycle do the AE350 macro's RAM-port inputs need? | AE350 | AE350-006 |
+| What limits 75 MHz timing in LiteDRAM's Wishbone burst frontend? | TOOL | TOOL-006 |
 | How do I regenerate Gowin IP without the GUI? | TOOL | TOOL-001, TOOL-002 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
@@ -117,12 +120,15 @@ SDR-001: "Add-on SDRAM is Winbond W9825G6KH-6: 32 MB x16 per chip, 166 MHz grade
 AE350-001: "AE350 reset vector is fixed at 0x80000000; CPU-master extended AHB window at 0xE8000000 (0x08000000 long)"
 AE350-002: "Caches reset disabled; mcache_ctl 0x7CA bit0 IC_EN, bit1 DC_EN; mcctlcommand 0x7CC value 6 = L1D write-back+invalidate all; micm/mdcm/mmsc_cfg at 0xFC0/0xFC1/0xFC2"
 AE350-003: "The A25 L1 data cache is write-back; the 0xE8000000-0xEFFFFFFF peripheral window is uncached"
+AE350-005: "With caches off, AE350 code running from the ROM port is instruction-fetch bound (fixed 784/1008 core cycles per loop iteration measured), masking memory latency"
+AE350-006: "Gowin's timing model gives the AE350_SOC RAM-port (DDR_H*) inputs about 5 ns of setup at the macro; register every path into them"
 AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32 B lines, inferred), mmsc_cfg = 0x2007F039; fence.i makes D-cache stores visible to instruction fetch"
 TOOL-001: "gw_sh create_ipc/set_property/generate_target regenerate IP headlessly; read_ipc segfaults in batch mode"
 TOOL-002: "GowinModGen -do <file>.mod regenerates PLL wrappers; PLL_INIT ships in IDE/ipcore/PLL_ADV/data/PLL/pll_init.v"
 TOOL-003: "Gowin SDC cannot attach a clock to a net merged away by synthesis (TA2003); constrain the surviving PLL output net"
 TOOL-004: "LiteX registers its Wishbone-to-CSR bridge only when the SoC has a LiteDRAM sdram core"
 TOOL-005: "LiteX CSRStatus(fields=...) drives status from its field signals; drive the fields, not status"
+TOOL-006: "LiteDRAMWishbone2Native's narrow-to-wide burst path compares full addresses combinationally to merge and cache; it fails 75 MHz on GW5AST behind the AE350"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 ```
@@ -307,6 +313,42 @@ TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 b
     - "RISC-V Unprivileged ISA, Zifencei extension (FENCE.I synchronizes instruction and data streams on the executing hart)"
     - "Field offsets of ISZ/DSZ, CCTLCSR, and PPMA: OpenSBI commit 06af8bd61b37, platform/generic/include/andes/andes.h"
   verification: "Firmware readback and the code-execution probe on 2026-09-28 (core-log entry 18). Decoding 0x00439ADA as ISET=2 (256 sets), IWAY=3 (4 ways), ISZ=3 (32-byte lines), giving 32 KiB, is INFERRED from the AndeStar V5 field order and is not confirmed by a primary document."
+
+- record_id: AE350-005
+  kind: PROCESSOR
+  topic_id: AE350
+  title: "Uncached AE350 code is instruction-fetch bound"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "With the L1 caches disabled (their reset state), a simple store loop and a load loop running from the ROM port took exactly 784 and 1,008 core cycles per iteration. The totals were identical to the cycle across two builds whose DDR3 paths differed in pipeline depth, so the time is set by fetching the loop's instructions over the ROM AHB port, not by data-memory latency."
+  consequence: "Enable the caches before any performance measurement. Uncached cycle counts from ROM-resident code do not measure DDR3 or SRAM speed."
+  sources:
+    - "enjoy-digital litex_wr_nic PR #103 (merge 05df6f4e), doc/tang_mega_138k_pro.md: 'fetching WRPC over the AHB port is then the bottleneck'"
+  verification: "Inferred from identical uncached counts in core-log entries 18 and 19 (205,521,436 and 264,241,456 core cycles per 1 MiB) despite different DDR3 paths."
+
+- record_id: AE350-006
+  kind: PROCESSOR
+  topic_id: AE350
+  title: "AE350 RAM-port input timing"
+  status: VERIFIED
+  verified_date: 2026-09-28
+  statement: "In Gowin EDA 1.9.11.03 timing analysis for GW5AST-138C, the AE350_SOC macro's RAM-port AHB inputs (DDR_HRDATA, DDR_HREADY and related) account for about 5 ns of a path's delay at the macro (for example, arrival 14.649 ns to endpoint 19.709 ns). That is over a third of the 13.333 ns 75 MHz period."
+  consequence: "Drive the AE350 RAM-port inputs from registers or very shallow logic. Gate1RAMBridge registers its DDR3 Wishbone responses for this reason."
+  sources:
+    - "Gowin EDA 1.9.11.03 place-and-route timing paths (build/gate1-place*/gateware/impl/pnr/project.timing_paths), AE350_SOC endpoints"
+  verification: "Read from this project's timing reports (core-log entries 17 and 19)."
+
+- record_id: TOOL-006
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "LiteDRAM Wishbone burst frontend timing"
+  status: VERIFIED
+  verified_date: 2026-09-28
+  statement: "When the Wishbone data width is narrower than the native port, LiteDRAMWishbone2Native (litedram commit c454a44, frontend/wishbone.py, _init_burst_upconverter) decides write merging (wr_can_merge) and read-cache hits by comparing the full native address combinationally in its CMD state. Those decisions drive its Wishbone ack and the enable of its 256-bit write buffer. Behind the AE350's bursting AHB bridge on GW5AST at 75 MHz, those paths were the critical setup failures, both directly into the AE350 macro and into the write buffer."
+  consequence: "Tang-PSX uses BurstWishbone2Native (gateware/ae350_ram_bridge.py), which decides burst continuation from the burst type and previous lane instead of address compares."
+  sources:
+    - "LiteDRAM commit c454a44 (third_party/litedram), litedram/frontend/wishbone.py"
+  verification: "Timing paths in core-log entries 17 and 19; replacing the frontend moved three of four placement variants from failing to passing."
 
 - record_id: TOOL-001
   kind: TOOLCHAIN

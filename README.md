@@ -50,9 +50,13 @@ bit 7 DDR3 read-return FIFO overflow. The diagnostic transport runs from the
 AE350 PLL's independent 75 MHz output so these values remain readable while
 the DDR3 clocks start.
 
-The AE350 reaches the 1 GiB DDR3 at `0x40000000` through its direct RAM
-bridge, a 75-to-100 MHz native-port crossing, and `gowin_ddr3_native`, which
-adapts LiteDRAM's native port to the Gowin DDR3 controller described below.
+The AE350 reaches the 1 GiB DDR3 at `0x40000000` through `Gate1RAMBridge`
+(`gateware/ae350_ram_bridge.py`), a 75-to-100 MHz native-port crossing, and
+`gowin_ddr3_native`, which adapts LiteDRAM's native port to the Gowin DDR3
+controller described below. `Gate1RAMBridge` registers the DDR3 Wishbone path
+and merges cache-line bursts without address compares, so the 75 MHz system
+clock closes timing; `python3 gateware/sim/test_ae350_ram_bridge.py` simulates
+it.
 
 ## Build
 

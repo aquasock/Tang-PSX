@@ -6,7 +6,7 @@ import argparse
 import os
 from pathlib import Path
 
-from migen import Cat, Case, ClockDomain, ClockSignal, If, Instance, Mux, ResetSignal, Signal
+from migen import Cat, Case, ClockDomain, ClockSignal, If, Instance, Mux, ResetSignal, Signal, log2_int
 from migen.genlib.cdc import MultiReg
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
@@ -21,7 +21,10 @@ from litex.soc.cores.cpu.gowin_ae350.core import GowinAE350
 
 from litex_boards.targets import sipeed_tang_console as tang_console
 
+from litedram.common import LiteDRAMNativePort
+
 import gowin_ddr3
+from ae350_ram_bridge import Gate1RAMBridge
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -285,8 +288,15 @@ class Gate1SoC(tang_console.BaseSoC):
         )
         self.bus.add_region("main_ram", SoCRegion(
             origin=MAIN_RAM_BASE, size=gowin_ddr3.SIZE, mode="rwx"))
-        self.cpu.add_memory_buses(address_width=32, data_width=gowin_ddr3.DATA_WIDTH)
-        cpu_port = self.cpu.memory_buses[0]
+        # The AE350 RAM port is split by Gate1RAMBridge, which registers the DDR3 Wishbone path
+        # so no combinational path runs from the LiteDRAM frontend into the AE350 macro.
+        region = self.bus.regions["main_ram"]
+        cpu_port = LiteDRAMNativePort("both",
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
+            data_width    = gowin_ddr3.DATA_WIDTH)
+        self.cpu.ram_bridge = Gate1RAMBridge(
+            self.cpu.ahb_ram, self.cpu.dbus, cpu_port, region.origin, region.size)
+        self.cpu.memory_buses.append(cpu_port)
         ddr_port = self.ddr3.port
         self.comb += [
             cpu_port.cmd.connect(ddr_port.cmd, omit={"addr"}),
