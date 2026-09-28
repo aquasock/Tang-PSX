@@ -612,3 +612,46 @@ Implement the approved loader cycle: a Tang-Control stream receiver feeding a 64
 - User Test: PASS
 
 ---
+
+## 20 COMMIT Unreleased 2026-09-28T15:50:47-07:00
+
+#### Coming From:
+
+Unreleased b75e209
+
+#### Purpose:
+
+Implement and prove the Tang-Control loader cycle for CRC-checked AE350 programs executed from DDR3 after the Gate 1 self-checks.
+
+#### Outcome:
+
+Gate 1 now receives Tang-Control streams through a 512-word approximately 2 KiB flow-controlled clock-domain-crossing FIFO, which the user explicitly selected in place of the superseded 64 KiB block-RAM-buffer idea after the hardware result; the 50 MHz board clock now drives the independent diagnostic and stream domain because the expanded `iosys_bl616` path did not meet 75 MHz. ROM firmware drains tagged start, data, end, and cancel entries, validates a 32-byte header, DDR3 range, stream length, and IEEE CRC-32, writes back and invalidates the D-cache, executes `fence.i`, calls the loaded RV32 entry through the versioned API in `software/common/tpx_api.h`, publishes its return value, and waits for another image. A debug write at address `0x100` holds the AE350 in reset for 31 system clocks without resetting the stream receiver. `tools/ae350_run.py` packages, uploads, streams, resets, and reports images, while `scripts/build-programs.sh` deterministically builds the small `hello` and 49 KiB `blob` checks. The stream simulation passed 60 randomized sessions and 395 ordered entries with asynchronous clocks, backpressure, partial words, cancellation, and the next-session-start boundary, and both programs built with payload CRC-32 values `0x2fdb7c81` and `0x110e21a3`. Three of four placement variants met all setup and hold timing; option 2 had Fmax values of 85.949 MHz for the 75 MHz system clock, 122.025 MHz for the 100 MHz DDR clock, and 77.955 MHz for the 50 MHz board clock, while option 4 failed system-clock setup. The deployed option-2 image was 4,952,572 bytes with SHA-256 `2f119e02544d4a4fec24eb43ff930d8e694677f31a5567c8334c75cd4fbcb6b2`, and Tang-Control verified SD readback CRC32 `0x5dc72edf`. On hardware the unchanged Gate 1 checks passed before loading; `hello.tpx` logged from DDR3 and returned `0x600d0001`, `blob.tpx` streamed at 301.6 KiB/s and returned its expected embedded-data CRC `0x5bf4bf30`, and the debug-reset path reran all self-checks and then executed `hello.tpx` again. The final transport snapshot matched all 353 FPGA requests with responses and reported zero timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows; the loader reported three sessions, 49,746 bytes, three ends, no cancels, and no stream overflow. The user accepted the result. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry against the canonical template and 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate the plan with the user before continuing; the remaining Gate 1 work is to implement the approved R3000A interpreter and software GTE checks against PC-generated reference vectors and run them through the proven loader.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/sim/test_stream_loader.py
+- gateware/stream_loader.py
+- scripts/build-programs.sh
+- software/common/tpx_api.h
+- software/gate1/Makefile
+- software/gate1/main.c
+- software/programs/blob/blob.S
+- software/programs/blob/main.c
+- software/programs/common/crt0.S
+- software/programs/common/linker.ld
+- software/programs/hello/main.c
+- tools/ae350_run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

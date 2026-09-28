@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from migen import Cat, Case, ClockDomain, ClockSignal, If, Instance, Mux, ResetSignal, Signal, log2_int
-from migen.genlib.cdc import MultiReg
+from migen.genlib.cdc import MultiReg, PulseSynchronizer
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
 from litex.gen import LiteXModule
@@ -25,6 +25,7 @@ from litedram.common import LiteDRAMNativePort
 
 import gowin_ddr3
 from ae350_ram_bridge import Gate1RAMBridge
+from stream_loader import StreamLoader
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -199,18 +200,22 @@ class Gate1CRG(LiteXModule):
             i_clkin   = ClockSignal("por"),
             o_lock    = cpu_pll_lock,
             o_cpu_clk = self.cd_cpu.clk,
-            o_bus_clk = self.cd_diag.clk,
+            o_bus_clk = Signal(),
         )
+
+        # The Tang-Control transport runs from the 50 MHz board clock. That keeps it
+        # independent of the system and DDR3 clocks, and leaves timing margin for
+        # iosys_bl616's live stream logic, which misses 75 MHz. It is constrained as clk50.
+        self.comb += self.cd_diag.clk.eq(clk50)
 
         # The AE350 macro receives the system-domain reset directly. Holding the
         # CPU clock domain in reset is still useful for generated cross-domain
         # logic and documents the PLL-lock dependency.
         self.specials += [
             AsyncResetSynchronizer(self.cd_cpu,  ~cpu_pll_lock),
-            AsyncResetSynchronizer(self.cd_diag, ~cpu_pll_lock),
+            AsyncResetSynchronizer(self.cd_diag, ~por_done),
         ]
         platform.add_period_constraint(self.cd_cpu.clk, 1e9 / 750e6)
-        platform.add_period_constraint(self.cd_diag.clk, 1e9 / 75e6)
         platform.toolchain.additional_cst_commands.append(
             'INS_LOC "ae350_pll/PLL_inst" PLL_R[0];')
 
@@ -232,6 +237,10 @@ class Gate1Status(LiteXModule, AutoCSR):
         self._fail_address = CSRStorage(32, reset=0, description="Address of the first failed check")
         self._fail_expected = CSRStorage(32, reset=0, description="Expected value of the first failed check")
         self._fail_observed = CSRStorage(32, reset=0, description="Observed value of the first failed check")
+        self._loader_state = CSRStorage(32, reset=0, description="Loader state (bits 7:0) and completed runs (bits 31:16)")
+        self._loader_bytes = CSRStorage(32, reset=0, description="Payload bytes of the last image")
+        self._loader_crc = CSRStorage(32, reset=0, description="Computed CRC-32 of the last image payload")
+        self._loader_result = CSRStorage(32, reset=0, description="Return value of the last program")
         self._log = []
         for index in range(32):
             register = CSRStorage(32, name=f"log{index}",
@@ -307,7 +316,7 @@ class Gate1SoC(tang_console.BaseSoC):
         # Clock groups are exclusive, as in the controller's reference design;
         # every crossing between them is synchronized.
         self.platform.add_false_path_constraints(
-            self.crg.cd_sys.clk, self.crg.cd_diag.clk, self.crg.clk50,
+            self.crg.cd_sys.clk, self.crg.clk50,
             self.ddr3.cd_ddr.clk, self.ddr3.memory_clk)
 
         # The shared board file describes this pin as 1.5 V even though its own
@@ -333,10 +342,14 @@ class Gate1SoC(tang_console.BaseSoC):
 
         # Do not release the hard core before its dedicated PLL locks.  The
         # generic wrapper only includes the system-domain reset by default.
+        # Tang-Control can restart the AE350 by writing 1 to debug address 0x100, so a hung
+        # program can be replaced without reloading the FPGA.
+        loader_cpu_reset = Signal()
         self.cpu.cpu_params["i_HW_RSTN"] = ~(
-            ResetSignal("sys") | self.cpu.reset | ~self.crg.cpu_pll_lock)
+            ResetSignal("sys") | self.cpu.reset | ~self.crg.cpu_pll_lock | loader_cpu_reset)
 
         self.gate1 = Gate1Status()
+        self.loader = loader = StreamLoader(stream_domain="diag")
 
         serial = self.platform.request("serial")
         debug_valid = Signal()
@@ -373,6 +386,20 @@ class Gate1SoC(tang_console.BaseSoC):
             ddr_status[2],
         ))
 
+        reset_request = Signal()
+        reset_count = Signal(5)
+        self.reset_pulse = reset_pulse = PulseSynchronizer("diag", "sys")
+        self.comb += [
+            reset_request.eq(debug_valid & debug_write & (debug_address == 0x100) & debug_wdata[0]),
+            reset_pulse.i.eq(reset_request),
+            loader_cpu_reset.eq(reset_count != 0),
+        ]
+        self.sync += If(reset_pulse.o,
+            reset_count.eq(31),
+        ).Elif(reset_count != 0,
+            reset_count.eq(reset_count - 1),
+        )
+
         debug_registers = {
             0x00: debug_rdata_comb.eq(0x54505831),
             0x04: debug_rdata_comb.eq(0x00020000),
@@ -391,6 +418,15 @@ class Gate1SoC(tang_console.BaseSoC):
             0xc0: debug_rdata_comb.eq(self.gate1._fail_address.storage),
             0xc4: debug_rdata_comb.eq(self.gate1._fail_expected.storage),
             0xc8: debug_rdata_comb.eq(self.gate1._fail_observed.storage),
+            0xd0: debug_rdata_comb.eq(self.gate1._loader_state.storage),
+            0xd4: debug_rdata_comb.eq(self.gate1._loader_bytes.storage),
+            0xd8: debug_rdata_comb.eq(self.gate1._loader_crc.storage),
+            0xdc: debug_rdata_comb.eq(self.gate1._loader_result.storage),
+            0xe0: debug_rdata_comb.eq(loader.sessions),
+            0xe4: debug_rdata_comb.eq(loader.bytes),
+            0xe8: debug_rdata_comb.eq(loader.ends),
+            0xec: debug_rdata_comb.eq(loader.cancels),
+            0xf0: debug_rdata_comb.eq(loader.overflow),
         }
         for index, register in enumerate(self.gate1._log):
             debug_registers[0x40 + 4*index] = debug_rdata_comb.eq(register.storage)
@@ -419,7 +455,7 @@ class Gate1SoC(tang_console.BaseSoC):
 
         self.specials += Instance("iosys_bl616",
             p_CORE_ID=0x0051,
-            p_FREQ=75_000_000,
+            p_FREQ=50_000_000,
             i_clk=ClockSignal("diag"),
             i_hclk=ClockSignal("diag"),
             i_resetn=~ResetSignal("diag"),
@@ -436,7 +472,12 @@ class Gate1SoC(tang_console.BaseSoC):
             i_debug_rdata=debug_rdata,
             o_debug_crc_errors=transport_crc_errors,
             o_debug_bad_requests=transport_bad_requests,
-            i_stream_ready=1,
+            o_stream_start=loader.start,
+            o_stream_end=loader.end,
+            o_stream_cancel=loader.cancel,
+            o_stream_data=loader.data,
+            o_stream_valid=loader.valid,
+            i_stream_ready=loader.ready,
             i_uart_rx=serial.rx,
             o_uart_tx=serial.tx,
         )

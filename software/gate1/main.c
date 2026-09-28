@@ -6,6 +6,8 @@
 #include <generated/csr.h>
 #include <generated/mem.h>
 
+#include "tpx_api.h"
+
 /* Test layout inside main RAM (1 GiB at MAIN_RAM_BASE). */
 #define DDR_TEST_WORDS        (1u << 18)        /* 1 MiB fixed-pattern region */
 #define CACHED_TEST_OFFSET    0x01000000u       /* cached fixed-pattern region */
@@ -336,6 +338,178 @@ static uint32_t test_code_execution(volatile uint32_t *code)
 	return stale;
 }
 
+/* ---- Program loader ------------------------------------------------------ */
+
+#define CPU_HZ            750000000u
+#define STREAM_TAG_DATA   0u
+#define STREAM_TAG_START  1u
+#define STREAM_TAG_END    2u
+#define STREAM_TAG_CANCEL 3u
+
+static const uint32_t crc_nibble[16] = {
+	0x00000000u, 0x1db71064u, 0x3b6e20c8u, 0x26d930acu,
+	0x76dc4190u, 0x6b6b51f4u, 0x4db26158u, 0x5005713cu,
+	0xedb88320u, 0xf00f9344u, 0xd6d6a3e8u, 0xcb61b38cu,
+	0x9b64c2b0u, 0x86d3d2d4u, 0xa00ae278u, 0xbdbdf21cu,
+};
+
+static uint32_t crc32_byte(uint32_t crc, uint8_t byte)
+{
+	crc ^= byte;
+	crc = (crc >> 4) ^ crc_nibble[crc & 15u];
+	return (crc >> 4) ^ crc_nibble[crc & 15u];
+}
+
+static void api_putc(char c)
+{
+	gate1_putc(c, stdout);
+}
+
+static void api_set_reg(uint32_t reg, uint32_t value)
+{
+	switch (reg) {
+	case TPX_REG_STAGE:         gate1_stage_write(value); break;
+	case TPX_REG_FAILURE:       gate1_failure_write(value); break;
+	case TPX_REG_WORDS:         gate1_ddr_words_write(value); break;
+	case TPX_REG_CHECKSUM:      gate1_ddr_checksum_write(value); break;
+	case TPX_REG_JIT:           gate1_jit_result_write(value); break;
+	case TPX_REG_CYCLES:        gate1_cycles_write(value); break;
+	case TPX_REG_FEATURES:      gate1_features_write(value); break;
+	case TPX_REG_FAIL_ADDRESS:  gate1_fail_address_write(value); break;
+	case TPX_REG_FAIL_EXPECTED: gate1_fail_expected_write(value); break;
+	case TPX_REG_FAIL_OBSERVED: gate1_fail_observed_write(value); break;
+	default: break;
+	}
+}
+
+static const struct tpx_api loader_api = {
+	.version      = TPX_API_VERSION,
+	.cpu_hz       = CPU_HZ,
+	.putc         = api_putc,
+	.set_reg      = api_set_reg,
+	.flush_dcache = l1d_flush,
+};
+
+/* Blocks until the stream FIFO has an entry, then returns and discards it. */
+static uint32_t stream_pop(uint32_t *data)
+{
+	uint32_t status;
+
+	do
+		status = loader_status_read();
+	while (!(status & (1u << CSR_LOADER_STATUS_VALID_OFFSET)));
+	*data = loader_data_read();
+	loader_pop_write(1);
+	return (status >> CSR_LOADER_STATUS_TAG_OFFSET) &
+		((1u << CSR_LOADER_STATUS_TAG_SIZE) - 1u);
+}
+
+static int stream_overflowed(void)
+{
+	return (loader_status_read() >> CSR_LOADER_STATUS_OVERFLOW_OFFSET) & 1u;
+}
+
+/*
+ * Receives one image after its START. Returns TPX_LOADER_RUN with the header
+ * filled in when the payload is in place and verified, TPX_LOADER_RECEIVE when
+ * a new START arrived mid-image (receive again), or an error state.
+ */
+static uint32_t receive_image(struct tpx_image_header *header)
+{
+	uint32_t *const words = (uint32_t *)header;
+	uintptr_t const ram_end = (uintptr_t)MAIN_RAM_BASE + (uintptr_t)MAIN_RAM_SIZE;
+	volatile uint32_t *destination;
+	uint32_t crc = 0xffffffffu;
+	uint32_t count;
+	uint32_t data;
+	uint32_t tag;
+	uint32_t i;
+
+	for (i = 0; i < TPX_IMAGE_HEADER / 4u; ++i) {
+		tag = stream_pop(&data);
+		if (tag == STREAM_TAG_START)
+			return TPX_LOADER_RECEIVE;
+		if (tag == STREAM_TAG_CANCEL)
+			return TPX_LOADER_ERR_CANCELLED;
+		if (tag != STREAM_TAG_DATA)
+			return TPX_LOADER_ERR_TRUNCATED;
+		words[i] = data;
+	}
+	if (header->magic != TPX_IMAGE_MAGIC || header->header_size != TPX_IMAGE_HEADER ||
+	    header->flags != 0 || header->payload_size == 0)
+		return TPX_LOADER_ERR_HEADER;
+	if (header->load_address < MAIN_RAM_BASE || (header->load_address & 3u) ||
+	    header->payload_size > ram_end - header->load_address ||
+	    header->entry < header->load_address ||
+	    header->entry - header->load_address >= header->payload_size ||
+	    (header->entry & 1u))
+		return TPX_LOADER_ERR_RANGE;
+
+	destination = (volatile uint32_t *)header->load_address;
+	for (i = 0; i < (header->payload_size + 3u) / 4u; ++i) {
+		uint32_t remaining = header->payload_size - 4u * i;
+		uint32_t byte;
+
+		tag = stream_pop(&data);
+		if (tag == STREAM_TAG_START)
+			return TPX_LOADER_RECEIVE;
+		if (tag == STREAM_TAG_CANCEL)
+			return TPX_LOADER_ERR_CANCELLED;
+		if (tag != STREAM_TAG_DATA)
+			return TPX_LOADER_ERR_TRUNCATED;
+		destination[i] = data;
+		for (byte = 0; byte < 4u && byte < remaining; ++byte)
+			crc = crc32_byte(crc, (uint8_t)(data >> (8u * byte)));
+	}
+
+	tag = stream_pop(&count);
+	if (tag == STREAM_TAG_START)
+		return TPX_LOADER_RECEIVE;
+	if (tag != STREAM_TAG_END || count != TPX_IMAGE_HEADER + header->payload_size)
+		return TPX_LOADER_ERR_LENGTH;
+
+	crc = ~crc;
+	gate1_loader_bytes_write(header->payload_size);
+	gate1_loader_crc_write(crc);
+	if (crc != header->payload_crc32)
+		return TPX_LOADER_ERR_CRC;
+	if (stream_overflowed())
+		return TPX_LOADER_ERR_OVERFLOW;
+	return TPX_LOADER_RUN;
+}
+
+static __attribute__((noreturn)) void run_loader(void)
+{
+	struct tpx_image_header header;
+	uint32_t runs = 0;
+	uint32_t data;
+	uint32_t state;
+
+	gate1_loader_state_write(TPX_LOADER_WAIT);
+	for (;;) {
+		/* Discard anything up to the next image. */
+		while (stream_pop(&data) != STREAM_TAG_START)
+			;
+		do {
+			gate1_loader_state_write((runs << 16) | TPX_LOADER_RECEIVE);
+			state = receive_image(&header);
+		} while (state == TPX_LOADER_RECEIVE);
+
+		if (state != TPX_LOADER_RUN) {
+			gate1_loader_state_write((runs << 16) | state);
+			continue;
+		}
+
+		l1d_flush();
+		__asm__ volatile ("fence.i" ::: "memory");
+		gate1_loader_state_write((runs << 16) | TPX_LOADER_RUN);
+		data = ((tpx_entry)(uintptr_t)header.entry)(&loader_api);
+		++runs;
+		gate1_loader_result_write(data);
+		gate1_loader_state_write((runs << 16) | TPX_LOADER_RETURNED);
+	}
+}
+
 int main(void)
 {
 	uintptr_t const base = MAIN_RAM_BASE;
@@ -343,6 +517,7 @@ int main(void)
 	uint32_t uncached_write, uncached_read, cached_write, cached_read;
 	uint32_t stale;
 
+	gate1_loader_state_write(TPX_LOADER_BOOT);
 	gate1_failure_write(0);
 	gate1_features_write(0);
 	gate1_stage_write(1);
@@ -384,6 +559,5 @@ int main(void)
 	printf("gate1 pass\n");
 	gate1_stage_write(0x80000001u);
 
-	for (;;)
-		__asm__ volatile ("wfi");
+	run_loader();
 }
