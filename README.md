@@ -62,3 +62,24 @@ The Tang-Control loadable image is `build/gate1/tang-psx-gate1.bin`. The
 larger `.fs` file beside the generated gateware is Gowin's textual fuse image,
 not the SD-card core format.
 # Tang-PSX
+
+## Standalone DDR3 controller test
+
+`gateware/ddr3_vendor` proves the full x32 DDR3 array with Gowin's DDR3
+controller (400 MHz memory clock, 1:4 ratio, 256-bit native port) before it is
+bridged to the AE350. Its controller, PLL, and PG484 pin configuration follow
+Sipeed's TangMega-138K-example `ddr_memory` design.
+
+Gowin's generated IP is licensed with Gowin EDA and is not committed.
+`scripts/gen-ddr3-ip.sh` regenerates it from the committed configuration into
+`build/ddr3-vendor/ip` and checks the emitted `.ipc` against
+`gateware/ddr3_vendor/ddr3_memory_interface.ipc`.
+
+```sh
+scripts/build-ddr3-vendor.sh      # place options 1-4 in parallel, with timing summary
+python3 tools/ddr3_vendor_status.py [--watch SECONDS]
+```
+
+Images are written to `build/ddr3-vendor/tang-psx-ddr3-place<N>.bin`. The test
+writes and verifies the whole 1 GiB continuously, complementing the pattern on
+alternate passes; its register map is in `tang_psx_ddr3_top.sv`.

@@ -465,3 +465,46 @@ None.
 - User Test: NOT RUN
 
 ---
+
+## 16 COMMIT Unreleased 2026-09-28T13:17:15-07:00
+
+#### Coming From:
+
+Unreleased 69e9aa2
+
+#### Purpose:
+
+Prove Sipeed's full x32 Gowin DDR3 controller configuration on the Tang Console 138K with a standalone Tang-Control-observable memory test before bridging it to the AE350.
+
+#### Outcome:
+
+The Gowin DDR3 controller now works on hardware at full speed and full width, completing 232 error-free passes over the full 1 GiB x32 array. The controller configuration from Sipeed's example at `06e7d8b` was regenerated for revision C with Gowin EDA 1.9.11.03, which ships DDR3 IP version 5.9 where Sipeed used version 6.0 from 1.9.12.02_SP1. Headless `gw_sh` `read_ipc` segfaults, so `scripts/gen-ddr3-ip.sh` configures the IP through `create_ipc`, the `set_property` values in `gateware/ddr3_vendor/ddr3_ip.tcl`, and `generate_target`, and it fails if the emitted `.ipc` differs from the committed `gateware/ddr3_vendor/ddr3_memory_interface.ipc`. That `.ipc` matches Sipeed's for every option the older generator supports, and the generated port list is identical. Sipeed's version-6.0-only arbitration, AXI, and memory-controller BSRAM options are unavailable, and the generator ignores the write-recovery setting at this configuration and keeps its default. `GowinModGen` regenerates Sipeed's 400 MHz PLL from the committed `gowin_pll.mod` with an identical body, and `PLL_INIT` is taken from the Gowin installation. Following the earlier licensing decision, the generated encrypted Gowin RTL is kept out of Git and only configuration, constraints, project RTL, and scripts are committed. The DDR3 pin map and placement constraints are Sipeed's (Apache-2.0) with the dock LED and key constraints removed. `gateware/ddr3_vendor/ddr3_tester.sv` writes and then verifies every BL8 burst of the array in order and complements the pattern on alternate passes, so every cell toggles; it issues commands only when the controller is ready and records per-byte error masks plus the expected and observed data at the first failure. A handshake snapshot carries that status to a register file served by `iosys_bl616` as core `0x51`, magic `0x54504433` (`TPD3`), ABI 1.0, clocked from the 50 MHz board clock. The Verilator testbench `gateware/sim/ddr3_tester_tb.sv` passed against a random-ready, random-latency controller model, detecting an injected single-byte fault with the correct burst, pass, and mask. The first four-variant build failed setup timing on every placement option because the tester's pass-seed arithmetic fed its 256-bit generator in one cycle; after that was pipelined, options 2 and 3 met all setup and hold timing, while options 1 and 4 still failed `sysclk` setup on tester generator-enable paths (TNS -120.475 ns over 108 endpoints and -344.459 ns over 281). Option 2, which had the best timing (Fmax 105.149 MHz on the 100 MHz controller clock and 79.748 MHz on the 50 MHz board clock), was deployed as `cores/console138k/tang-psx-ddr3.bin`. That image was 4,651,004 bytes with SHA-256 `a97e9a332807a9874df7256c865336f6b64f241d50204231d829e61a12076f0c`, and Tang-Control verified its SD readback CRC32 `0x0bc2521f`. On hardware the PLL locked and calibration completed 27.306 ms after reset. By the final reading, about 2.9 minutes after load, the test had completed 232 full-array passes with zero error bursts, a zero byte-error mask, and no read stalls. The last sweeps measured 2,853 MB/s write and 2,928 MB/s read, about 89 to 92 percent of the 3.2 GB/s theoretical peak. Tang-Control matched all 69 FPGA requests with responses and reported zero timeouts, CRC errors, malformed packets, unexpected responses, or receive-FIFO overflows. The user accepted the result. The test does not exercise masked writes, interleaved read and write traffic, or scattered addressing, which AE350 traffic will need. Its 32-bit uptime, heartbeat, and verified-burst counters wrap, so `tools/ddr3_vendor_status.py` reports coverage from the pass counter. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, and validated this entry against the template.
+
+#### Next Steps:
+
+Reevaluate the plan with the user before continuing. The standing direction is to bridge the controller's 256-bit native port, clocked at 100 MHz, into the AE350 system and extend DDR testing to masked writes, interleaved traffic, and executable-code coherency.
+
+#### Files Modified:
+
+- README.md
+- gateware/ddr3_vendor/ddr3_ip.tcl
+- gateware/ddr3_vendor/ddr3_memory_interface.ipc
+- gateware/ddr3_vendor/ddr3_tester.sv
+- gateware/ddr3_vendor/gowin_pll.mod
+- gateware/ddr3_vendor/status_snapshot.sv
+- gateware/ddr3_vendor/tang_psx_ddr3.cst
+- gateware/ddr3_vendor/tang_psx_ddr3.sdc
+- gateware/ddr3_vendor/tang_psx_ddr3_top.sv
+- gateware/sim/ddr3_tester_tb.sv
+- scripts/build-ddr3-vendor.sh
+- scripts/gen-ddr3-ip.sh
+- scripts/gowin-timing-summary.py
+- tools/ddr3_vendor_status.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
