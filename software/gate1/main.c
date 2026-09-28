@@ -8,6 +8,7 @@
 
 /* Test layout inside main RAM (1 GiB at MAIN_RAM_BASE). */
 #define DDR_TEST_WORDS        (1u << 18)        /* 1 MiB fixed-pattern region */
+#define CACHED_TEST_OFFSET    0x01000000u       /* cached fixed-pattern region */
 #define BYTE_TEST_OFFSET      0x00200000u
 #define BYTE_TEST_BYTES       256u              /* eight 256-bit controller words */
 #define INTERLEAVE_OFFSET     0x00300000u
@@ -24,6 +25,7 @@
 #define FEATURE_DDR_ADDRESS    (1u << 3)
 #define FEATURE_DDR_BYTE       (1u << 4)
 #define FEATURE_DDR_INTERLEAVE (1u << 5)
+#define FEATURE_CACHES         (1u << 6)
 
 #define FAIL_DDR_INIT          0x00010001u
 #define FAIL_DDR_DATA          0x00010002u
@@ -33,6 +35,28 @@
 #define FAIL_DDR_OVERFLOW      0x00010006u
 #define FAIL_JIT_FIRST         0x00020001u
 #define FAIL_JIT_REPLACE       0x00020002u
+#define FAIL_CACHE_ENABLE      0x00030001u
+#define FAIL_CACHE_CCTL        0x00030002u
+
+/* AndeStar V5 cache CSRs (see .ai/core-reference.md AE350-002). */
+#define CSR_MCACHE_CTL         0x7ca
+#define CSR_MCCTLCOMMAND       0x7cc
+#define CSR_MICM_CFG           0xfc0
+#define CSR_MDCM_CFG           0xfc1
+#define CSR_MMSC_CFG           0xfc2
+#define MCACHE_CTL_IC_EN       (1u << 0)
+#define MCACHE_CTL_DC_EN       (1u << 1)
+#define MMSC_CFG_CCTLCSR       (1u << 16)
+#define CCTL_L1D_WBINVAL_ALL   6u
+
+#define CSR_STR_(x) #x
+#define CSR_STR(x) CSR_STR_(x)
+#define CSR_READ(csr) ({ uint32_t v_; \
+	__asm__ volatile ("csrr %0, " CSR_STR(csr) : "=r" (v_)); v_; })
+#define CSR_WRITE(csr, value) \
+	__asm__ volatile ("csrw " CSR_STR(csr) ", %0" :: "r" ((uint32_t)(value)) : "memory")
+#define CSR_SET(csr, value) \
+	__asm__ volatile ("csrs " CSR_STR(csr) ", %0" :: "r" ((uint32_t)(value)) : "memory")
 
 #define LOG_WORDS 32u
 
@@ -76,6 +100,7 @@ static inline uint32_t read_cycle(void)
 }
 
 static uint32_t features;
+static int caches_on;
 
 static void feature_passed(uint32_t feature, uint32_t stage)
 {
@@ -121,19 +146,52 @@ static void wait_for_calibration(void)
 		if (read_cycle() - start > CALIB_TIMEOUT_CYCLES)
 			fail(FAIL_DDR_INIT, 0, 1, ddr3_status_read());
 	}
-	printf("ddr3 calibrated\n");
 }
 
-/* Sequential fixed-pattern write then verify. */
-static void test_fixed_pattern(volatile uint32_t *ram)
+/*
+ * With the write-back D-cache on, write back and invalidate it before a
+ * verify pass so every checked word is read from DDR3 rather than the cache.
+ */
+static void l1d_flush(void)
+{
+	__asm__ volatile ("fence rw, rw" ::: "memory");
+	if (caches_on)
+		CSR_WRITE(CSR_MCCTLCOMMAND, CCTL_L1D_WBINVAL_ALL);
+	__asm__ volatile ("fence rw, rw" ::: "memory");
+}
+
+static void enable_caches(void)
+{
+	uint32_t ctl;
+
+	if (!(CSR_READ(CSR_MMSC_CFG) & MMSC_CFG_CCTLCSR))
+		fail(FAIL_CACHE_CCTL, 0, MMSC_CFG_CCTLCSR, CSR_READ(CSR_MMSC_CFG));
+	CSR_SET(CSR_MCACHE_CTL, MCACHE_CTL_IC_EN | MCACHE_CTL_DC_EN);
+	ctl = CSR_READ(CSR_MCACHE_CTL);
+	if ((ctl & (MCACHE_CTL_IC_EN | MCACHE_CTL_DC_EN)) != (MCACHE_CTL_IC_EN | MCACHE_CTL_DC_EN))
+		fail(FAIL_CACHE_ENABLE, 0, MCACHE_CTL_IC_EN | MCACHE_CTL_DC_EN, ctl);
+	caches_on = 1;
+	__asm__ volatile ("fence.i" ::: "memory");
+	printf("ic %08lx dc %08lx ms %08lx mc %08lx\n",
+		(unsigned long)CSR_READ(CSR_MICM_CFG), (unsigned long)CSR_READ(CSR_MDCM_CFG),
+		(unsigned long)CSR_READ(CSR_MMSC_CFG), (unsigned long)ctl);
+}
+
+/* Sequential fixed-pattern write then verify; returns write and read cycles. */
+static void test_fixed_pattern(volatile uint32_t *ram, uint32_t *write_cycles,
+	uint32_t *read_cycles)
 {
 	uint32_t checksum = 0;
+	uint32_t start;
 	uint32_t i;
 
+	start = read_cycle();
 	for (i = 0; i < DDR_TEST_WORDS; ++i)
 		ram[i] = pattern(i);
-	__asm__ volatile ("fence rw, rw" ::: "memory");
+	l1d_flush();
+	*write_cycles = read_cycle() - start;
 
+	start = read_cycle();
 	for (i = 0; i < DDR_TEST_WORDS; ++i) {
 		uint32_t expected = pattern(i);
 		uint32_t actual = ram[i];
@@ -144,6 +202,7 @@ static void test_fixed_pattern(volatile uint32_t *ram)
 		checksum = (checksum << 5) | (checksum >> 27);
 		checksum ^= actual;
 	}
+	*read_cycles = read_cycle() - start;
 	gate1_ddr_words_write(DDR_TEST_WORDS);
 	gate1_ddr_checksum_write(checksum);
 }
@@ -160,7 +219,7 @@ static void test_address_lines(uintptr_t base)
 	*origin = 0xa5a5a5a5u;
 	for (bit = ADDRESS_BITS_FIRST; bit <= ADDRESS_BITS_LAST; ++bit)
 		*(volatile uint32_t *)(base + (1u << bit)) = pattern(0x1000u + bit);
-	__asm__ volatile ("fence rw, rw" ::: "memory");
+	l1d_flush();
 
 	if (*origin != 0xa5a5a5a5u)
 		fail(FAIL_DDR_ADDRESS, base, 0xa5a5a5a5u, *origin);
@@ -205,7 +264,7 @@ static void test_byte_lanes(uintptr_t base)
 		shadow[i] = (uint8_t)value;
 		shadow[i + 1u] = (uint8_t)(value >> 8);
 	}
-	__asm__ volatile ("fence rw, rw" ::: "memory");
+	l1d_flush();
 
 	for (i = 0; i < BYTE_TEST_BYTES / 4u; ++i) {
 		uint32_t expected = shadow[4u * i] |
@@ -238,6 +297,7 @@ static void test_interleave(volatile uint32_t *ram)
 				fail(FAIL_DDR_INTERLEAVE, (uintptr_t)&ram[i - 1u], previous, actual);
 		}
 	}
+	l1d_flush();
 	for (i = INTERLEAVE_WORDS; i-- != 0;) {
 		uint32_t expected = pattern(0x40000u + i);
 		uint32_t actual = ram[i];
@@ -246,9 +306,15 @@ static void test_interleave(volatile uint32_t *ram)
 	}
 }
 
-static void test_code_execution(volatile uint32_t *code)
+/*
+ * Returns the value observed when the code was rewritten without fence.i.
+ * That result is architecturally unspecified; it is logged only as evidence
+ * of whether the I-cache still held the previous instructions.
+ */
+static uint32_t test_code_execution(volatile uint32_t *code)
 {
 	uint32_t first;
+	uint32_t stale;
 	uint32_t second;
 
 	install_return_constant(code, 42);
@@ -258,17 +324,24 @@ static void test_code_execution(volatile uint32_t *code)
 		fail(FAIL_JIT_FIRST, (uintptr_t)code, 42, first);
 	}
 
+	code[0] = ((77u & 0xfffu) << 20) | 0x00000513u;
+	__asm__ volatile ("fence rw, rw" ::: "memory");
+	stale = ((uint32_t (*)(void))(uintptr_t)code)();
+
 	install_return_constant(code, 99);
 	second = ((uint32_t (*)(void))(uintptr_t)code)();
 	gate1_jit_result_write((first << 16) | second);
 	if (second != 99)
 		fail(FAIL_JIT_REPLACE, (uintptr_t)code, 99, second);
+	return stale;
 }
 
 int main(void)
 {
 	uintptr_t const base = MAIN_RAM_BASE;
 	uint32_t start_cycles = read_cycle();
+	uint32_t uncached_write, uncached_read, cached_write, cached_read;
+	uint32_t stale;
 
 	gate1_failure_write(0);
 	gate1_features_write(0);
@@ -277,25 +350,37 @@ int main(void)
 	wait_for_calibration();
 	feature_passed(FEATURE_DDR_INIT, 2);
 
-	test_fixed_pattern((volatile uint32_t *)base);
+	/* Baseline with both caches off (their reset state). */
+	test_fixed_pattern((volatile uint32_t *)base, &uncached_write, &uncached_read);
 	feature_passed(FEATURE_DDR_RW, 3);
 
+	enable_caches();
+	feature_passed(FEATURE_CACHES, 4);
+
+	test_fixed_pattern((volatile uint32_t *)(base + CACHED_TEST_OFFSET),
+		&cached_write, &cached_read);
+	gate1_stage_write(5);
+
 	test_address_lines(base);
-	feature_passed(FEATURE_DDR_ADDRESS, 4);
+	feature_passed(FEATURE_DDR_ADDRESS, 6);
 
 	test_byte_lanes(base + BYTE_TEST_OFFSET);
-	feature_passed(FEATURE_DDR_BYTE, 5);
+	feature_passed(FEATURE_DDR_BYTE, 7);
 
 	test_interleave((volatile uint32_t *)(base + INTERLEAVE_OFFSET));
-	feature_passed(FEATURE_DDR_INTERLEAVE, 6);
+	feature_passed(FEATURE_DDR_INTERLEAVE, 8);
 
-	test_code_execution((volatile uint32_t *)(base + CODE_OFFSET));
-	feature_passed(FEATURE_JIT_EXEC, 7);
+	stale = test_code_execution((volatile uint32_t *)(base + CODE_OFFSET));
+	feature_passed(FEATURE_JIT_EXEC, 9);
 
 	if (ddr3_status_read() & (1u << CSR_DDR3_STATUS_OVERFLOW_OFFSET))
 		fail(FAIL_DDR_OVERFLOW, 0, 0, ddr3_status_read());
 
 	gate1_cycles_write(read_cycle() - start_cycles);
+	printf("u %lu %lu c %lu %lu\n", (unsigned long)uncached_write,
+		(unsigned long)uncached_read, (unsigned long)cached_write,
+		(unsigned long)cached_read);
+	printf("stale %lu\n", (unsigned long)stale);
 	printf("gate1 pass\n");
 	gate1_stage_write(0x80000001u);
 

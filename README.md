@@ -34,9 +34,14 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | `0xc4` | Expected value of the first failed check |
 | `0xc8` | Observed value of the first failed check |
 
-Feature bits are: bit 0 DDR3 calibration, bit 1 fixed-pattern read/write,
-bit 2 executable DDR plus `fence.i`, bit 3 walking address bits over 1 GiB,
-bit 4 byte and halfword stores, and bit 5 interleaved read-after-write.
+Feature bits are: bit 0 DDR3 calibration, bit 1 fixed-pattern read/write with
+caches off, bit 2 executable DDR plus `fence.i`, bit 3 walking address bits
+over 1 GiB, bit 4 byte and halfword stores, bit 5 interleaved read-after-write,
+and bit 6 AE350 instruction and data caches enabled. Checks after bit 6 run with
+both caches on and write back and invalidate the D-cache before each verify, so
+verified data is read from DDR3. The firmware log reports the cache
+configuration CSRs, the uncached and cached 1 MiB write/read cycle counts, and
+the value returned by rewritten code before `fence.i`.
 
 Clock/reset status bits are: bit 0 AE350 PLL locked, bit 1 system reset, bit 2
 DDR3 memory PLL locked, bit 3 DDR3 calibration complete, bit 4 system PLL

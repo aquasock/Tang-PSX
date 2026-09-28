@@ -547,3 +547,34 @@ Reevaluate with the user before continuing. Open work includes enabling the AE35
 - User Test: PASS
 
 ---
+
+## 18 COMMIT Unreleased 2026-09-28T14:20:52-07:00
+
+#### Coming From:
+
+Unreleased 6e49e01
+
+#### Purpose:
+
+Enable the AE350 instruction and data caches, prove DDR3 access and runtime-code coherency with them active, and measure the effect on DDR3 throughput.
+
+#### Outcome:
+
+With the AE350 instruction and data caches enabled, every Gate 1 check still passed on hardware, and DDR3 throughput rose about 27 to 28 times. At the user's request, `.ai/core-reference.md` was created as the project's structured technical reference, holding records for the device, board, DDR3 controller, AE350, toolchain, and Tang-Control transport facts established so far. The cache control CSRs were not in the reference, so they were looked up online. The sources were Andes Technology's code in upstream U-Boot (commit `1d29c718`), OpenSBI's Andes AE350 platform (commit `06af8bd6`), and enjoy-digital's hardware-tested AE350 caches in litex_wr_nic PR #103 (merge `05df6f4e`), and they were recorded as AE350-002 and AE350-003. Only the firmware changed, and no gateware changed. It times an uncached 1 MiB write and read, enables both caches with `mcache_ctl` (CSR `0x7ca`), and fails if the enable bits do not read back or the CCTL CSRs are absent. It then reruns the fixed-pattern, walking-address, byte-lane, interleave, and code-execution checks, writing back and invalidating the D-cache (`mcctlcommand` `0x7cc` command 6) before each verify so checked data is read from DDR3, and it logs the cache configuration, cycle counts, and a stale-fetch probe. All four placement variants were built. Only option 2 met all setup and hold timing (`sys_clk` Fmax 76.180 MHz); options 1, 3, and 4 failed `sys_clk` setup with the same results as entry 17. The option-2 image was 4,952,572 bytes with SHA-256 `533c9cb602045887934710c49a21a8fea0578b571dd7b7e2911b35209f50b696`, and Tang-Control verified its SD readback CRC32 `0x70e53eb6`. On hardware the firmware reached stage `0x80000001` with failure 0 and feature bitmap `0x7f`, and the fixed-pattern checksum stayed `0xd42cc044`. `mcache_ctl` read back `0x3`, `micm_cfg` and `mdcm_cfg` both read `0x00439ada` (both caches present, inferred to be 32 KiB each), and `mmsc_cfg` read `0x2007f039` (CCTL CSRs present, no programmable PMA). A 1 MiB write took 205,521,436 cycles uncached and 7,601,916 cycles cached including the write-back. A 1 MiB read took 264,241,456 cycles uncached and 9,338,778 cycles cached. At the 750 MHz core clock that is about 3.8 MB/s and 3.0 MB/s uncached against about 103 MB/s and 84 MB/s cached. Code rewritten without `fence.i` still returned the stale value 42, which shows the I-cache holding the old instructions. After `fence rw,rw` plus `fence.i` it returned 99 (`0x002a0063`), which proves instruction-fetch coherency with both caches active. The CSR window at `0xE8000000` remained coherent with the D-cache on, and Tang-Control matched all 49 requests with zero transport errors. The user accepted the result. AE350-002 was promoted to VERIFIED, AE350-003 was corrected to INFERRED because its source is secondary, and AE350-004 records this board's cache configuration and `fence.i` behavior. The only placement variant meeting 75 MHz remains the thin timing margin recorded in entry 17. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry against the template, and reviewed the new `.ai/core-reference.md` for consistency with `.ai/core.md`.
+
+#### Next Steps:
+
+Reevaluate with the user before continuing. The remaining Gate 1 work is the R3000A and GTE tests, and the open engineering items are the thin 75 MHz `sys_clk` margin in LiteX's AE350 RAM bridge and further DDR3 throughput for the JIT.
+
+#### Files Modified:
+
+- README.md
+- software/gate1/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
