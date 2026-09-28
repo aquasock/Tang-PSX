@@ -26,12 +26,15 @@ from litedram.common import LiteDRAMNativePort
 
 import gowin_ddr3
 from ae350_ram_bridge import Gate1RAMBridge
+from ddr3_port_arbiter import DDR3PortArbiter
 from stream_loader import StreamLoader
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PHOSPHOR = ROOT / "third_party" / "tang-phosphor"
 MAIN_RAM_BASE = 0x4000_0000
+FRAMEBUFFER_BASE = 0x7ff0_0000
+FRAMEBUFFER_FIFO_BYTES = 4096
 HDMI_TIMINGS = {
     # The proven Tang Console PHY uses a 125 MHz serializer clock divided by
     # five.  Standard 640x480 blanking at the resulting 25 MHz pixel clock is
@@ -340,12 +343,19 @@ class Gate1SoC(tang_console.BaseSoC):
         self.cpu.ram_bridge = Gate1RAMBridge(
             self.cpu.ahb_ram, self.cpu.dbus, cpu_port, region.origin, region.size)
         self.cpu.memory_buses.append(cpu_port)
+        video_port = LiteDRAMNativePort("read",
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
+            data_width    = gowin_ddr3.DATA_WIDTH)
+        shared_port = LiteDRAMNativePort("both",
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
+            data_width    = gowin_ddr3.DATA_WIDTH)
+        self.ddr3_arbiter = DDR3PortArbiter(cpu_port, video_port, shared_port)
         ddr_port = self.ddr3.port
         self.comb += [
-            cpu_port.cmd.connect(ddr_port.cmd, omit={"addr"}),
-            ddr_port.cmd.addr.eq(cpu_port.cmd.addr[:gowin_ddr3.ADDRESS_BITS]),
-            cpu_port.wdata.connect(ddr_port.wdata),
-            ddr_port.rdata.connect(cpu_port.rdata),
+            shared_port.cmd.connect(ddr_port.cmd, omit={"addr"}),
+            ddr_port.cmd.addr.eq(shared_port.cmd.addr[:gowin_ddr3.ADDRESS_BITS]),
+            shared_port.wdata.connect(ddr_port.wdata),
+            ddr_port.rdata.connect(shared_port.rdata),
         ]
         # Clock groups are exclusive, as in the controller's reference design;
         # every crossing between them is synchronized.
@@ -374,20 +384,41 @@ class Gate1SoC(tang_console.BaseSoC):
         # block-local declarations despite its historical .v filenames.
         self.platform.toolchain.options["verilog_std"] = "sysv2017"
 
-        # First visible milestone: a self-contained diagnostic pattern.  It
-        # deliberately does not consume DDR3 bandwidth; the next video cycle
-        # will replace it with line-buffered scanout from PSX VRAM.
+        # DDR-backed visible milestone: RGB565 pixels share the vendor DDR3
+        # port with the AE350, with enough FIFO storage for more than three
+        # active scan lines. Firmware draws the initial diagnostic image and
+        # enables the DMA only after its memory checks finish.
         hdmi = self.platform.request("hdmi")
         self.comb += [
             hdmi.hdp.eq(1),
             hdmi.pwr_sav.eq(0),
         ]
         self.videophy = VideoGowinHDMIPHY(hdmi, clock_domain="hdmi")
-        self.add_video_colorbars(
+        self.add_video_framebuffer(
             phy=self.videophy,
             timings=("640x480@59.52Hz", HDMI_TIMINGS),
             clock_domain="hdmi",
+            format="rgb565",
+            fifo_depth=FRAMEBUFFER_FIFO_BYTES,
+            base=FRAMEBUFFER_BASE,
+            dma_port=video_port,
         )
+        # The framebuffer region already exports VIDEO_FRAMEBUFFER_BASE in
+        # generated/mem.h. Avoid exporting the identical SoC constant too,
+        # which warns when LiteX software includes mem.h before soc.h.
+        del self.constants["VIDEO_FRAMEBUFFER_BASE"]
+
+        video_underflow_seen = Signal()
+        video_underflow_diag = Signal()
+        video_enable_diag = Signal()
+        self.sync.hdmi += If(self.video_framebuffer.underflow,
+            video_underflow_seen.eq(1))
+        self.specials += [
+            MultiReg(video_underflow_seen, video_underflow_diag, "diag"),
+            MultiReg(self.video_framebuffer.dma._enable.storage, video_enable_diag, "diag"),
+        ]
+        video_status = Signal(32)
+        self.comb += video_status.eq(Cat(video_enable_diag, video_underflow_diag))
 
         # Do not release the hard core before its dedicated PLL locks.  The
         # generic wrapper only includes the system-domain reset by default.
@@ -451,7 +482,7 @@ class Gate1SoC(tang_console.BaseSoC):
 
         debug_registers = {
             0x00: debug_rdata_comb.eq(0x54505831),
-            0x04: debug_rdata_comb.eq(0x00020000),
+            0x04: debug_rdata_comb.eq(0x00020001),
             0x08: debug_rdata_comb.eq(self.gate1._stage.storage),
             0x0c: debug_rdata_comb.eq(self.gate1._failure.storage),
             0x10: debug_rdata_comb.eq(self.gate1._ddr_words.storage),
@@ -476,6 +507,7 @@ class Gate1SoC(tang_console.BaseSoC):
             0xe8: debug_rdata_comb.eq(loader.ends),
             0xec: debug_rdata_comb.eq(loader.cancels),
             0xf0: debug_rdata_comb.eq(loader.overflow),
+            0xf4: debug_rdata_comb.eq(video_status),
         }
         for index, register in enumerate(self.gate1._log):
             debug_registers[0x40 + 4*index] = debug_rdata_comb.eq(register.storage)

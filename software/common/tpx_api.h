@@ -18,6 +18,12 @@
 #define TPX_IMAGE_MAGIC     0x31495054u     /* "TPI1" */
 #define TPX_IMAGE_HEADER    32u
 
+/* Static Gate 1 drawing surface. Call flush_dcache after changing pixels. */
+#define TPX_FRAMEBUFFER_BASE   0x7ff00000u
+#define TPX_FRAMEBUFFER_WIDTH  640u
+#define TPX_FRAMEBUFFER_HEIGHT 480u
+#define TPX_FRAMEBUFFER_STRIDE (TPX_FRAMEBUFFER_WIDTH * 2u)
+
 struct tpx_image_header {
 	uint32_t magic;
 	uint32_t header_size;       /* TPX_IMAGE_HEADER */

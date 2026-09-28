@@ -8,6 +8,12 @@
 
 #include "tpx_api.h"
 
+#if VIDEO_FRAMEBUFFER_BASE != TPX_FRAMEBUFFER_BASE || \
+	VIDEO_FRAMEBUFFER_HRES != TPX_FRAMEBUFFER_WIDTH || \
+	VIDEO_FRAMEBUFFER_VRES != TPX_FRAMEBUFFER_HEIGHT
+#error "Gate 1 framebuffer constants do not match the TPX drawing API"
+#endif
+
 /* Test layout inside main RAM (1 GiB at MAIN_RAM_BASE). */
 #define DDR_TEST_WORDS        (1u << 18)        /* 1 MiB fixed-pattern region */
 #define CACHED_TEST_OFFSET    0x01000000u       /* cached fixed-pattern region */
@@ -28,6 +34,7 @@
 #define FEATURE_DDR_BYTE       (1u << 4)
 #define FEATURE_DDR_INTERLEAVE (1u << 5)
 #define FEATURE_CACHES         (1u << 6)
+#define FEATURE_FRAMEBUFFER    (1u << 7)
 
 #define FAIL_DDR_INIT          0x00010001u
 #define FAIL_DDR_DATA          0x00010002u
@@ -338,6 +345,40 @@ static uint32_t test_code_execution(volatile uint32_t *code)
 	return stale;
 }
 
+/*
+ * Draw a pattern that is visibly distinct from the gateware color bars. The
+ * framebuffer is static after this write, so one whole-cache writeback before
+ * enabling DMA is sufficient for coherent scanout.
+ */
+static void start_framebuffer(void)
+{
+	volatile uint16_t *const pixels = (volatile uint16_t *)TPX_FRAMEBUFFER_BASE;
+	uint32_t y;
+
+	for (y = 0; y < TPX_FRAMEBUFFER_HEIGHT; ++y) {
+		uint32_t x;
+		for (x = 0; x < TPX_FRAMEBUFFER_WIDTH; ++x) {
+			uint32_t red = (x * 31u) / 639u;
+			uint32_t green = (y * 63u) / 479u;
+			uint32_t blue = ((x >> 4) ^ (y >> 4)) & 31u;
+			uint16_t value;
+
+			if (((x >> 5) ^ (y >> 5)) & 1u) {
+				red ^= 31u;
+				blue ^= 31u;
+			}
+			value = (uint16_t)((red << 11) | (green << 5) | blue);
+			if (x < 8u || x >= 632u || y < 8u || y >= 472u)
+				value = 0xffffu;
+			else if ((x >= 316u && x < 324u) || (y >= 236u && y < 244u))
+				value = 0x0000u;
+			pixels[y * TPX_FRAMEBUFFER_WIDTH + x] = value;
+		}
+	}
+	l1d_flush();
+	video_framebuffer_dma_enable_write(1);
+}
+
 /* ---- Program loader ------------------------------------------------------ */
 
 #define CPU_HZ            750000000u
@@ -547,6 +588,9 @@ int main(void)
 
 	stale = test_code_execution((volatile uint32_t *)(base + CODE_OFFSET));
 	feature_passed(FEATURE_JIT_EXEC, 9);
+
+	start_framebuffer();
+	feature_passed(FEATURE_FRAMEBUFFER, 10);
 
 	if (ddr3_status_read() & (1u << CSR_DDR3_STATUS_OVERFLOW_OFFSET))
 		fail(FAIL_DDR_OVERFLOW, 0, 0, ddr3_status_read());

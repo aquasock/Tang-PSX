@@ -6,8 +6,9 @@ and uses the Tang-Control BL616 firmware and transport.
 
 The first engineering gate proved that the AE350 can initialize and use board
 DDR3, execute newly generated RV32 code, and expose deterministic results
-through Tang-Control. The current image also drives HDMI with a deterministic
-color-bar pattern as the first visible milestone before PSX hardware is added.
+through Tang-Control. The current image also drives HDMI from a software-filled
+DDR3 framebuffer as the first visible memory-backed milestone before PSX
+hardware is added.
 
 ## Gate 1 status ABI
 
@@ -16,7 +17,7 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | Address | Meaning |
 | --- | --- |
 | `0x00` | Magic `0x54505831` (`TPX1`) |
-| `0x04` | ABI version (`0x00020000`) |
+| `0x04` | ABI version (`0x00020001`) |
 | `0x08` | Firmware stage; bit 31 means complete |
 | `0x0c` | Failure code; zero means no detected failure |
 | `0x10` | Number of DDR words verified |
@@ -42,6 +43,7 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | `0xe8` | Tang-Control stream end count |
 | `0xec` | Tang-Control stream cancel count |
 | `0xf0` | Sticky stream-event overflow flag |
+| `0xf4` | Video status: bit 0 DMA enabled, bit 1 sticky scanout underflow |
 
 Writing bit 0 to debug address `0x100` resets the AE350 for 31 system-clock
 cycles. The FPGA stream receiver and its counters remain active across this
@@ -50,11 +52,12 @@ CPU reset.
 Feature bits are: bit 0 DDR3 calibration, bit 1 fixed-pattern read/write with
 caches off, bit 2 executable DDR plus `fence.i`, bit 3 walking address bits
 over 1 GiB, bit 4 byte and halfword stores, bit 5 interleaved read-after-write,
-and bit 6 AE350 instruction and data caches enabled. Checks after bit 6 run with
-both caches on and write back and invalidate the D-cache before each verify, so
-verified data is read from DDR3. The firmware log reports the cache
-configuration CSRs, the uncached and cached 1 MiB write/read cycle counts, and
-the value returned by rewritten code before `fence.i`.
+bit 6 AE350 instruction and data caches enabled, and bit 7 the DDR-backed
+framebuffer drawn and enabled. Checks after bit 6 run with both caches on and
+write back and invalidate the D-cache before each verify, so verified data is
+read from DDR3. The firmware log reports the cache configuration CSRs, the
+uncached and cached 1 MiB write/read cycle counts, and the value returned by
+rewritten code before `fence.i`.
 
 Clock/reset status bits are: bit 0 AE350 PLL locked, bit 1 system reset, bit 2
 DDR3 memory PLL locked, bit 3 DDR3 calibration complete, bit 4 system PLL
@@ -105,14 +108,24 @@ The last command resets the AE350, waits for the ROM checks and loader to become
 ready again, then streams the program. `python3 tools/ae350_run.py status`
 prints the loader, stream, result-register, and firmware-log state.
 
-## HDMI diagnostic output
+## HDMI framebuffer output
 
-Gate 1 drives a 640x480 eight-bar diagnostic pattern directly from FPGA logic.
+Gate 1 scans a contiguous 640x480 RGB565 framebuffer from `0x7ff00000` in
+DDR3. Its 614,400 bytes are separate from the normal test and program-loading
+areas. A fair native-port arbiter shares the 256-bit DDR3 controller between
+AE350 reads/writes and the read-only video DMA, whose 4 KiB FIFO holds more
+than three active lines. ROM firmware draws a bordered gradient/checker image,
+writes back the data cache, and enables scanout; debug address `0xf4` reports
+whether DMA started and whether it ever starved.
+
+Loaded programs can draw through the `TPX_FRAMEBUFFER_*` constants in
+`software/common/tpx_api.h`; call the API's `flush_dcache` function after
+updates so the continuously looping DMA sees the new pixels.
+
 The system PLL supplies a 125 MHz HDMI serializer clock, divided by five for a
-25 MHz pixel clock. Standard 640x480 blanking produces a 59.52 Hz refresh rate,
-which is accepted by the tested HDMI display. The pattern does not read DDR3;
-it isolates clocking, pinout, serialization, and display compatibility before
-the next video milestone adds line-buffered scanout from PSX VRAM.
+25 MHz pixel clock. Standard 640x480 blanking produces a 59.52 Hz refresh rate.
+This contiguous RGB565 surface proves software-drawn DDR3 video but is not yet
+the PlayStation GPU's 1024x512 15-bit VRAM layout.
 
 ## Build
 

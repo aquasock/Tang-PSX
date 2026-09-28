@@ -686,3 +686,40 @@ Reevaluate the plan with the user before continuing; the proposed next visible m
 - User Test: PASS
 
 ---
+
+## 22 COMMIT Unreleased 2026-09-28T16:41:50-07:00
+
+#### Coming From:
+
+Unreleased 168d8d5
+
+#### Purpose:
+
+Replace the fixed HDMI color bars with a software-filled, DDR3-backed framebuffer and prove concurrent AE350 and video access on hardware.
+
+#### Outcome:
+
+Gate 1 now scans a contiguous 640x480 RGB565 surface at `0x7ff00000` through a 4 KiB FIFO while the AE350 retains read/write access to the same vendor DDR3 controller. The new fair two-client native-port arbiter alternates CPU and video commands when both are active and uses a 16-entry ownership FIFO to route in-order read returns; its randomized simulation routed 192 interleaved reads with no same-client run longer than two requests and preserved a CPU write. A second simulation delivered 64 ordered RGB565 pixels from four 256-bit DDR words across the system-to-HDMI clock crossing without underflow, while the existing RAM-bridge, stream-loader, 15 relevant LiteX framebuffer/timing tests, program builds, and generation-only build passed. ROM firmware draws a bordered gradient/checker image, writes back the data cache, enables video DMA, and reports framebuffer feature bit 7; the TPX header exposes the address, dimensions, and stride so loaded programs can draw and flush pixels. Debug ABI `0x00020001` adds video status at `0xf4`, and `tools/ae350_run.py` reports DMA enable and sticky underflow. Of four placement variants, only option 3 met all setup and hold constraints, with Fmax values of 87.408 MHz for the 75 MHz system clock, 115.594 MHz for the 100 MHz DDR clock, 63.760 MHz for the 50 MHz board/diagnostic clock, and 138.360 MHz for the 25 MHz pixel domain; options 1, 2, and 4 respectively missed DDR or system setup and were rejected. The deployed option-3 image was 4,894,608 bytes with SHA-256 `f2be953a8a2f0d117a59f1ebb57c7751a889d44ff5d349d5d2c08079b08eeadc`, and Tang-Control verified SD readback CRC32 `0x16fc0c8d`. The user saw the expected gradient/checker image with its white border and black center cross. On hardware Gate 1 reached stage `0x80000001` with failure 0 and feature bitmap `0xff`; video remained enabled with no sticky underflow before and after concurrent loader traffic, `hello.tpx` returned `0x600d0001`, and the 49 KiB `blob.tpx` returned `0x5bf4bf30`. Tang-Control matched all 170 FPGA requests with responses and reported zero timeouts, CRC errors, malformed packets, unexpected responses, USB drops, or receive-FIFO overflows. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry against the canonical template and 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate the plan with the user before continuing; the recommended next milestone returns to the R3000A interpreter and software GTE reference-vector checks through the proven loader, followed by PlayStation 1024x512 15-bit VRAM scanout and the GPU/BIOS command path needed for the startup logo.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/ddr3_port_arbiter.py
+- gateware/sim/test_ddr3_port_arbiter.py
+- gateware/sim/test_video_framebuffer.py
+- software/common/tpx_api.h
+- software/gate1/main.c
+- tools/ae350_run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

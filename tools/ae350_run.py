@@ -105,10 +105,12 @@ def read_log(port):
 def print_status(port):
     state, size, crc, result = peek(port, 0xd0, 4)
     sessions, stream_bytes, ends, cancels, overflow = peek(port, 0xe0, 5)
+    video = peek(port, 0xf4)[0]
     print(f"loader     {describe_state(state)}")
     print(f"image      {size} bytes, crc32 {crc:08x}, result 0x{result:08x}")
     print(f"stream     sessions {sessions}, bytes {stream_bytes}, ends {ends}, "
           f"cancels {cancels}, overflow {overflow}")
+    print(f"video      enabled {video & 1}, underflow {(video >> 1) & 1}")
     values = peek(port, 0x08, 7) + peek(port, 0xc0, 3)
     print("registers  " + " ".join(f"{name}={value:08x}"
                                    for (name, _), value in zip(RESULT_REGISTERS, values)))
