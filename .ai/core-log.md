@@ -1158,3 +1158,33 @@ Complete phase 4 of step 2 by adding a committed runner for `tests/psx_bios_ligh
 - User Test: N/A
 
 ---
+
+## 34 COMMIT Unreleased 2026-09-29T11:25:37-07:00
+
+#### Coming From:
+
+Unreleased a87059e
+
+#### Purpose:
+
+Add the committed pass/fail gate for the SCPH-1001 logo checkpoint under Lightrec, completing phase 4 and with it step 2 of the approved Lightrec plan.
+
+#### Outcome:
+
+`tests/test_psx_bios_lightrec.py` builds `liblightrec.a` once with `tools/lightrec_build.py`, then builds and runs `tests/psx_bios_lightrec_rv32.c` under `qemu-riscv32` concurrently with the guest clock starting at 0, `0x7ff00000`, and `0xfff00000`. Each run must reproduce the exact logo telemetry (114,713 service calls, 30,182,928 guest instructions, 144 VBlanks, 10,768 GPU words, 414 primitives, 63 uploads, and 158,497 DMA words) and framebuffer SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7`, must end with no unexpected Lightrec exit flags, and must report byte-identical statistics to the run starting at 0, including 438 interrupts, 6 system calls, 1,208 compiled blocks in 331,900 bytes of code, and 2,929,660 heap bytes. The gate passed in 4.8 s. Two temporary mutations of `software/lightrec/psx_lightrec.c`, both reverted, checked its sensitivity. Emptying the RAM restore after cache isolation stopped the BIOS before its first VBlank at the 400 million instruction limit, and the gate failed. Skipping code invalidation after DMA left the checkpoint exact because the BIOS never executes code that DMA overwrote, so that path remains covered only by `tests/psx_lightrec_unit_rv32.c` through `tests/test_lightrec_rv32.py`. The user chose to leave the upstream Lightrec JR-to-J segment defect unpatched, and it remains documented in `software/lightrec/psx_lightrec.h` and TOOL-010. No hardware build or deployment was part of this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 34 with exactly six required sections, confirmed that 34 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+With the user's go-ahead, start step 3 of the approved Lightrec plan by comparing Lightrec with the current JIT and the interpreter under QEMU on the same checkpoint for correctness, executed-instruction cost, code size, and memory, then move to the AE350 hardware integration in step 4. Run both `tests/test_lightrec_rv32.py` and `tests/test_psx_bios_lightrec.py` after any change to the Lightrec integration.
+
+#### Files Modified:
+
+- tests/test_psx_bios_lightrec.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
