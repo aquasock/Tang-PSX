@@ -11,7 +11,9 @@
 #include "machine.h"
 #include "tpx_api.h"
 
-#define RUN_TIMEOUT_SECONDS  60u
+#ifndef RUN_TIMEOUT_SECONDS
+#define RUN_TIMEOUT_SECONDS  0u       /* zero runs until the core is reset */
+#endif
 #define FRAME_CYCLES         564480u    /* 33.8688 MHz / 60 */
 #define REFRESH_FRAMES       3u
 #define SERVICE_INSTRUCTIONS 256u
@@ -216,7 +218,11 @@ uint32_t main(const struct tpx_api *loader)
 		psx_machine_insert_disc(&machine, &disc);
 	}
 	start_cycle = read_cycle();
+#if RUN_TIMEOUT_SECONDS
 	while (elapsed_ms() < RUN_TIMEOUT_SECONDS * 1000u) {
+#else
+	for (;;) {
+#endif
 		pump_stream();
 		if (psx_machine_waiting_for_vblank(&machine))
 			psx_machine_idle_to(&machine, next_vblank);

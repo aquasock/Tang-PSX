@@ -59,6 +59,7 @@ struct psx_cdrom {
 	uint32_t next_sector;           /* cycle of the next sector */
 	uint8_t sector[PSX_CD_SECTOR_BYTES];
 	uint8_t sector_ready;           /* sector holds the INT1 sector */
+	uint8_t data_enabled;           /* request register BFRD bit */
 	uint8_t data[PSX_CD_SECTOR_BYTES];
 	uint32_t data_count;
 	uint32_t data_read;

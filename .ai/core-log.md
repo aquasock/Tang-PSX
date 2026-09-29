@@ -938,3 +938,39 @@ Reevaluate with the user. The open items are to find the deterministic divergenc
 - User Test: PASS
 
 ---
+
+## 28 COMMIT Unreleased 2026-09-28T23:16:53-07:00
+
+#### Coming From:
+
+Unreleased d0e895f
+
+#### Purpose:
+
+Identify and correct the deterministic CD-ROM divergence that corrupted Spyro shortly after its first screen, then allow the disc runner to continue until reset.
+
+#### Outcome:
+
+The divergence was the CD-ROM request register's BFRD cursor behavior, not CPU, timing, or disc-stream corruption: Spyro's PsyQ `CdRead` selects 2340-byte sectors, reads the 12-byte Mode 2 header, reasserts BFRD, and then DMA-transfers 2048 data bytes, while `software/psx/cdrom.c` incorrectly reloaded the FIFO on that second enable and delivered the header again. The controller now preserves its cursor while BFRD remains asserted, resets it when BFRD is cleared, selects the next sector when it arrives, and retires a fully consumed buffer. A sanitizer-backed two-sector regression reproduces PsyQ's header/data sequence and passes; the 96 CPU/GTE vectors with mutation detection, 40,000-polygon GPU differential, RV32 JIT checks, exact interpreter and JIT BIOS checkpoints, and a 30-emulated-second Spyro host run all passed. The corrected host run continued through the former approximately 13-second low-RAM corruption point to active rendering and XA-sector handling. The disc program now runs until core reset instead of deliberately returning after 60 wall-clock seconds, and `tools/ae350_run.py run --detach` starts persistent programs without waiting for a terminal result. The rebuilt persistent TPX has a 587,380-byte payload, payload CRC-32 `0x59a5176a`, complete-image SHA-256 `6ed8559e50b848216f7ad1eebac2b412ecda1d13ec82c28fbde4a407287e5c12`, and verified SD readback CRC-32 `0x06a6720e`. On the unchanged Gate 1 core and Tang-Control firmware it passed the former stop and corruption points with zero program failure, stream overflow, or HDMI underflow; telemetry reached 2,435 VBlanks while GPU traffic and disc requests continued, and the user reported unchanged FPS, visible intro polygons, and final arrival at the game's Press Start screen. `.ai/core-reference.md` updates PSXIO-002 with the cursor rule and its PsyQ dependency using PSX-SPX, pinned DuckStation source, and the pinned Spyro decompilation. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 28 with exactly six required sections, confirmed 28 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Continue from the proven Press Start state by testing controller-driven menu and gameplay paths; separately profile the unchanged approximately 19-percent real-time performance and address known rendering fidelity gaps including semi-transparency and display-mode handling, while retaining the new CD-ROM cursor regression and exact BIOS checkpoints.
+
+#### Files Modified:
+
+- README.md
+- software/programs/psx_disc/main.c
+- software/psx/cdrom.c
+- software/psx/cdrom.h
+- tests/psx_cdrom_host.c
+- tests/test_psx_cdrom.py
+- tools/ae350_run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

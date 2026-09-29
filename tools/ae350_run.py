@@ -7,9 +7,10 @@
   upload <image.tpx> [--remote PATH]
       Copy an image to the SD card. Tang-Control only accepts this from the
       TangCore main menu, before the Gate 1 core is loaded.
-  run <remote> [--reset] [--timeout SECONDS]
+  run <remote> [--reset] [--detach] [--timeout SECONDS]
       With the Gate 1 core running, optionally restart the AE350, stream the
-      image from the SD card, and wait for the program's result.
+      image from the SD card, and wait for the program's result. --detach
+      returns after the image starts and is intended for persistent programs.
   status
       Show loader state, stream counters, result registers, and the log.
   blob -o <file> / blob-crc
@@ -160,6 +161,10 @@ def command_run(args, port):
             size, ms = int(match.group(1)), int(match.group(2))
             rate = size / (ms / 1000) / 1024 if ms else 0
             print(f"streamed   {remote}: {size} bytes in {ms} ms ({rate:.1f} KiB/s)")
+    if args.detach:
+        print(f"started    {time.monotonic() - started:.2f} s after stream start")
+        print_status(port)
+        return 0
     state = wait_state(port,
         lambda s: s != before and (s & 0xff) not in (0x02, 0x03), args.timeout)
     print(f"finished   {time.monotonic() - started:.2f} s after stream start")
@@ -183,6 +188,8 @@ def main():
     p = sub.add_parser("run")
     p.add_argument("remote", help=f"SD path, or a name under {REMOTE_DIR}/")
     p.add_argument("--reset", action="store_true", help="restart the AE350 first")
+    p.add_argument("--detach", action="store_true",
+                   help="return after starting a persistent program")
     p.add_argument("--timeout", type=float, default=30.0)
     sub.add_parser("status")
     p = sub.add_parser("blob")

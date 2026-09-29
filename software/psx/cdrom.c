@@ -390,8 +390,14 @@ void psx_cdrom_write(struct psx_cdrom *cd, uint32_t port, uint8_t value,
 		break;
 	case (3u << 2) | 0u: /* 1F801803h bank 0: request register */
 		if (value & 0x80u) {
-			load_data_fifo(cd);
+			/* Reasserting BFRD does not rewind the current buffer.  LibCD
+			 * relies on this when it reads a 12-byte raw-sector header and
+			 * then enables the FIFO again before the data DMA. */
+			if (!cd->data_enabled)
+				load_data_fifo(cd);
+			cd->data_enabled = 1;
 		} else {
+			cd->data_enabled = 0;
 			cd->data_count = 0;
 			cd->data_read = 0;
 		}
@@ -448,6 +454,15 @@ static void read_sector(struct psx_cdrom *cd, uint32_t cycles)
 		return;
 	}
 	cd->sector_ready = 1;
+	/* A new INT1 sector selects the new sector buffer.  If BFRD remained
+	 * asserted after a partial raw-sector transfer, the FIFO cursor starts
+	 * at the beginning of this new sector. */
+	if (cd->data_enabled)
+		load_data_fifo(cd);
+	else {
+		cd->data_count = 0;
+		cd->data_read = 0;
+	}
 	++cd->sectors_read;
 	queue_stat(cd, 1u, cycles);
 }
@@ -487,6 +502,12 @@ uint32_t psx_cdrom_dma_word(struct psx_cdrom *cd)
 		if (cd->data_read < cd->data_count)
 			byte = cd->data[cd->data_read++];
 		value |= byte << (8u * n);
+	}
+	if (cd->data_count != 0u && cd->data_read >= cd->data_count) {
+		cd->data_enabled = 0;
+		cd->sector_ready = 0;
+		cd->data_count = 0;
+		cd->data_read = 0;
 	}
 	return value;
 }

@@ -226,23 +226,26 @@ and run it:
 PSX_BIOS=/path/to/scph1001.bin scripts/build-programs.sh psx_disc
 python3 tools/ae350_run.py upload build/programs/psx_disc/psx_disc.tpx
 # Load Gate 1 before running this command.
-python3 tools/ae350_run.py run psx_disc.tpx --reset --timeout 120
+python3 tools/ae350_run.py run psx_disc.tpx --reset --detach --timeout 120
 ```
 
 The program requests 32-sector windows through the loader's disc API and
 reads ahead one window. VBlank runs at 60 Hz of emulated time, and while the
 CPU only waits for it the machine clock skips ahead to the next frame, so
 device latency seen by software matches hardware. HDMI is refreshed every third
-frame. It returns `0xd15c0001` after 60 s and logs VBlanks, sectors, requests,
-retries, and cache misses; Tang-Control's `status` lists the disc it serves.
+frame. It runs until the core is reset and publishes VBlanks, sectors, requests,
+retries, and cache misses once per second; Tang-Control's `status` lists the
+disc it serves. The runner's `--detach` option returns after the image starts,
+leaving the emulator active.
 
 The machine adds a CD-ROM controller (`software/psx/cdrom.c`: commands,
 interrupt handshake, 1x/2x sector timing, 2048/2340-byte delivery, DMA channel
 3), the controller port with a digital pad in slot 1 (`software/psx/sio.c`),
 and the GTE lighting and color commands. With Spyro the Dragon (USA) the BIOS
 passes its license check, shows the PlayStation logo, and boots
-`SCUS_942.28`, which draws its first screen; the game later fails on an
-emulation difference that is still being investigated.
+`SCUS_942.28`. PsyQ LibCD's two-stage raw-sector transfer is supported: its
+12-byte header read followed by a repeated FIFO-enable write preserves the
+FIFO cursor, allowing the subsequent 2048-byte DMA to receive user data.
 
 `tests/psx_disc_host.c` runs the same boot on the host from a local `.bin`
 (`psx_disc_host BIOS BIN SECONDS [PPM]`), with diagnostics listed in its
