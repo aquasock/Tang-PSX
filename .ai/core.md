@@ -49,7 +49,7 @@ Gowin EDA 1.9.11.03
 GowinSynthesis
 SystemVerilog 2017
 Target: GW5AST-LV138PG484AC1/I0
-Device revision B
+Device revision C
 
 - BL616
 Bouffalo SDK
