@@ -1021,3 +1021,33 @@ Reevaluate with the user. The fabric rasterizer moved rendering off the AE350 bu
 - User Test: PASS
 
 ---
+
+## 30 COMMIT Unreleased 2026-09-29T09:08:26-07:00
+
+#### Coming From:
+
+Unreleased f77f3be
+
+#### Purpose:
+
+Run the fabric-accelerated SCPH-1001 BIOS logo checkpoint on hardware, which entry 29 left untested, and compare it with the software-GPU result from entry 26.
+
+#### Outcome:
+
+`psx_bios.tpx` was rebuilt from `f77f3be` (589,772 bytes, CRC-32 `c9a05a30`, SHA-256 `e567fc16a41918330643460910348b8bc60518ad0a900756f44a95136695b7b5`, payload CRC-32 `bb3e91ef`). It replaced the entry 26 software-GPU image on the SD card and was verified on SD readback. On the unchanged entry 29 core (`2cf878cc`) the Gate 1 self-checks passed, and the run returned `0xb1051001` at stage `0x80011001` 8.28 s after stream start, with no stream overflow or HDMI underflow. Its telemetry matched the host checkpoint exactly: 27,870,497 guest instructions, 10,768 GPU words, 414 primitives, 63 uploads, 144 VBlanks, 158,497 DMA words, and PC `80047c2c`. The user saw a correct logo sequence and completion. The timing summary reported 6,347 ms to the logo, against entry 26's 5,866 ms with the software GPU. GPU time, including waits for the fabric, rose from 3,753 ms to 4,157 ms, and the display copy from 125 ms to 161 ms. The remaining CPU emulation stayed at about 1,851 ms, and VBlank 13 arrived at 1,453 ms instead of 1,510 ms. The fabric rasterizer is therefore about 11 percent slower than the 750 MHz software renderer on this workload. Together with entry 29's unchanged Spyro frame rate, this shows that the accelerator has not yet produced a speedup. The cause is untested; the working hypothesis is the rasterizer's multi-cycle per-pixel handling at 75 MHz with VRAM read-modify-write in DDR. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 30 with exactly six required sections, confirmed that 30 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. Choose between profiling and pipelining the fabric rasterizer's per-pixel path and DDR access until it beats the software renderer, and returning effort to CPU emulation and JIT coverage, which dominates Spyro's wall time. The unused descriptor DMA, controller gameplay, semi-transparency, and display-mode work from entries 28 and 29 remain open.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
