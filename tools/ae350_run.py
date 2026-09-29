@@ -52,6 +52,11 @@ RESULT_REGISTERS = [
     ("jit", 0x18), ("cycles", 0x1c), ("features", 0x20),
     ("fail_address", 0xc0), ("fail_expected", 0xc4), ("fail_observed", 0xc8),
 ]
+PROFILE_REGISTERS = [
+    ("profile_cpu_ms", 0x110), ("profile_gpu_ms", 0x114),
+    ("profile_accel_ms", 0x118), ("profile_sync_ms", 0x11c),
+    ("profile_display_ms", 0x120),
+]
 
 
 BLOB_BYTES = 48 * 1024
@@ -115,6 +120,10 @@ def print_status(port):
     values = peek(port, 0x08, 7) + peek(port, 0xc0, 3)
     print("registers  " + " ".join(f"{name}={value:08x}"
                                    for (name, _), value in zip(RESULT_REGISTERS, values)))
+    values = peek(port, 0x110, len(PROFILE_REGISTERS))
+    print("profile    " + " ".join(f"{name}={value}"
+                                  for (name, _), value in
+                                  zip(PROFILE_REGISTERS, values)))
     print("log        " + repr(read_log(port)))
 
 

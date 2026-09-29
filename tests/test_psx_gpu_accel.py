@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+"""Verilate the fabric GPU and compare it with the portable renderer."""
+
+from __future__ import annotations
+
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PUBLIC = ("psx_gpu_reset", "psx_gpu_write_gp0", "psx_gpu_write_gp1",
+          "psx_gpu_read_data", "psx_gpu_read_status", "psx_gpu_sync")
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="tang-psx-gpu-accel-") as temporary:
+        work = Path(temporary)
+        current = work / "gpu_accel.cpp"
+        reference = work / "gpu_reference.cpp"
+        current.write_text(
+            "#define PSX_GPU_ACCEL_TEST 1\n"
+            f'#include "{ROOT / "software/psx/gpu.c"}"\n')
+        renames = "\n".join(f"#define {name} ref_{name[4:]}" for name in PUBLIC)
+        reference.write_text(
+            renames + "\n" + f'#include "{ROOT / "software/psx/gpu.c"}"\n')
+        subprocess.run([
+            "verilator", "--cc", "--exe", "--build", "--timing",
+            "-Wno-fatal", "--top-module", "gpu_rasterizer",
+            "-Mdir", str(work / "obj"),
+            "-CFLAGS", f"-O2 -I{ROOT / 'software/psx'}",
+            str(ROOT / "gateware/gpu_rasterizer.sv"),
+            str(ROOT / "tests/psx_gpu_accel_diff.cpp"),
+            str(current), str(reference),
+        ], check=True)
+        subprocess.run([str(work / "obj/Vgpu_rasterizer")], check=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -10,12 +10,14 @@
 #define RUN_TIMEOUT_SECONDS 30u
 #define PROFILE_VBLANK 13u
 #define RESULT_COMPLETE 0xb1051001u
+#define PSX_VRAM_BASE 0x7fe00000u
 
 extern const uint8_t psx_bios_image[];
 extern const uint8_t psx_bios_image_end[];
 
 static uint8_t psx_ram[PSX_MAIN_RAM_BYTES];
-static uint16_t psx_vram[PSX_VRAM_PIXELS];
+static uint16_t *const psx_vram =
+	(uint16_t *)(uintptr_t)PSX_VRAM_BASE;
 static struct psx_machine machine;
 static uint64_t start_cycle;
 static uint64_t elapsed_cycles;
@@ -108,6 +110,7 @@ static void copy_display(const struct tpx_api *api,
 	volatile uint16_t *framebuffer)
 {
 	uint64_t start = read_cycle();
+	psx_gpu_sync(&machine.gpu);
 	psx_machine_copy_display(&machine, framebuffer,
 		TPX_FRAMEBUFFER_WIDTH, TPX_FRAMEBUFFER_HEIGHT);
 	api->flush_dcache();

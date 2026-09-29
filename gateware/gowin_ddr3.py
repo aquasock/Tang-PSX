@@ -222,10 +222,13 @@ class GowinDDR3(LiteXModule, AutoCSR):
         )
 
         # A registered read-data stage keeps the crossing FIFO's gray-code
-        # compare out of the path to the AE350 AHB read data.
+        # compare out of the path to the AE350 AHB read data, and its skid
+        # register keeps the clients' rdata ready out of the FIFO's read
+        # pointer and block-RAM read address.
         cdc_port = LiteDRAMNativePort("both", ADDRESS_BITS, DATA_WIDTH, clock_domain="sys")
         self.cdc = LiteDRAMNativePortCDC(cdc_port, ddr_port)
-        self.rdata_pipe = rdata_pipe = stream.PipeValid(cdc_port.rdata.description)
+        self.rdata_pipe = rdata_pipe = stream.Buffer(cdc_port.rdata.description,
+            pipe_valid=True, pipe_ready=True)
         self.comb += [
             self.port.cmd.connect(cdc_port.cmd),
             self.port.wdata.connect(cdc_port.wdata),

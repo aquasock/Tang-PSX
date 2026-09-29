@@ -47,6 +47,11 @@ enum tpx_reg {
 	TPX_REG_FAIL_ADDRESS,   /* 0xc0 */
 	TPX_REG_FAIL_EXPECTED,  /* 0xc4 */
 	TPX_REG_FAIL_OBSERVED,  /* 0xc8 */
+	TPX_REG_PROFILE_CPU,    /* 0x110, cumulative milliseconds */
+	TPX_REG_PROFILE_GPU,    /* 0x114, cumulative milliseconds */
+	TPX_REG_PROFILE_ACCEL,  /* 0x118, cumulative milliseconds */
+	TPX_REG_PROFILE_SYNC,   /* 0x11c, cumulative milliseconds */
+	TPX_REG_PROFILE_DISPLAY,/* 0x120, cumulative milliseconds */
 	TPX_REG_COUNT
 };
 

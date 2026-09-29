@@ -6,16 +6,18 @@ import argparse
 import os
 from pathlib import Path
 
-from migen import Cat, Case, ClockDomain, ClockSignal, If, Instance, Mux, ResetSignal, Signal, log2_int
+from migen import Cat, Case, ClockDomain, ClockSignal, FSM, If, Instance, Mux, ResetSignal, Signal, log2_int
 from migen.genlib.cdc import MultiReg, PulseSynchronizer
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
-from litex.gen import LiteXModule
+from litex.gen import LiteXModule, NextState, NextValue
 from litex.build.generic_platform import IOStandard
 from litex.soc.cores.clock.gowin_gw5a import GW5APLL
 from litex.soc.integration.builder import Builder
 from litex.soc.integration.soc import SoCRegion
 from litex.soc.interconnect import ahb as litex_ahb
+from litex.soc.interconnect import csr as litex_csr
+from litex.soc.interconnect import csr_bus, wishbone as litex_wishbone
 from litex.soc.interconnect.csr import AutoCSR, CSRStatus, CSRStorage
 from litex.soc.cores.cpu.gowin_ae350.core import GowinAE350
 from litex.soc.cores.video import VideoGowinHDMIPHY
@@ -26,7 +28,8 @@ from litedram.common import LiteDRAMNativePort
 
 import gowin_ddr3
 from ae350_ram_bridge import Gate1RAMBridge
-from ddr3_port_arbiter import DDR3PortArbiter
+from ddr3_port_arbiter import DDR3PortArbiter, DDR3RWArbiter
+from gpu_accel import GPUAccelerator
 from stream_loader import StreamLoader
 
 
@@ -41,6 +44,7 @@ AE350_CPU_ODIV = 1
 AE350_BUS_ODIV = 10
 MAIN_RAM_BASE = 0x4000_0000
 FRAMEBUFFER_BASE = 0x7ff0_0000
+GPU_ACCEL_BASE = 0xe900_0000
 FRAMEBUFFER_FIFO_BYTES = 4096
 HDMI_TIMINGS = {
     # The proven Tang Console PHY uses a 125 MHz serializer clock divided by
@@ -57,6 +61,128 @@ HDMI_TIMINGS = {
     "v_sync_offset": 10,
     "v_sync_width":  2,
 }
+
+
+class Gate1Wishbone2CSR(LiteXModule):
+    """Registered 32-bit CSR bridge with time for a pipelined bank read.
+
+    Gate 1's CSR bank address fanout was the final 75 MHz setup path after the
+    GPU datapath was pipelined.  The matching bank below registers its select
+    and local address before the read-data mux; this bridge waits for that
+    extra stage before acknowledging the Wishbone access.
+    """
+
+    def __init__(self, bus_wishbone=None, bus_csr=None, register=True):
+        assert register
+        self.csr = bus_csr or csr_bus.Interface()
+        self.wishbone = bus_wishbone or litex_wishbone.Interface()
+        assert self.wishbone.data_width == self.csr.data_width == 32
+        assert self.wishbone.addressing == "word"
+        assert self.csr.alignment == 32
+
+        selected = Signal()
+        self.comb += selected.eq(self.wishbone.sel != 0)
+
+        # Address and data are captured on every idle cycle, as upstream's
+        # combinational bridge presents them; only the strobes wait for a
+        # request, so the decoded cyc does not reach 46 capture enables.
+        self.fsm = fsm = FSM(reset_state="IDLE")
+        fsm.act("IDLE",
+            NextValue(self.csr.adr, self.wishbone.adr[:len(self.csr.adr)]),
+            NextValue(self.csr.dat_w, self.wishbone.dat_w),
+            If(self.wishbone.cyc & self.wishbone.stb,
+                NextValue(self.csr.re, ~self.wishbone.we & selected),
+                NextValue(self.csr.we, self.wishbone.we & selected),
+                NextState("ACCESS"),
+            ),
+        )
+        fsm.act("ACCESS",
+            NextValue(self.csr.re, 0),
+            NextValue(self.csr.we, 0),
+            NextState("READ-WAIT-1"),
+        )
+        fsm.act("READ-WAIT-1",
+            NextState("READ-WAIT-2"),
+        )
+        fsm.act("READ-WAIT-2",
+            NextValue(self.csr.adr, 0),
+            NextState("ACK"),
+        )
+        fsm.act("ACK",
+            self.wishbone.ack.eq(1),
+            self.wishbone.dat_r.eq(self.csr.dat_r),
+            NextState("IDLE"),
+        )
+
+
+class Gate1CSRBank(litex_csr.GenericBank):
+    """CSR bank with registered select/address and a two-stage read mux."""
+
+    def __init__(self, description, address=0, bus=None, paging=0x800,
+            ordering="big"):
+        if bus is None:
+            bus = csr_bus.Interface()
+        self.bus = bus
+        aligned_paging = paging // 4
+        local_address_bits = log2_int(aligned_paging)
+
+        litex_csr.GenericBank.__init__(self,
+            description=description,
+            busword=len(self.bus.dat_w),
+            ordering=ordering)
+
+        selected = Signal()
+        selected_r = Signal()
+        local_address_r = Signal(local_address_bits)
+        self.comb += selected.eq(
+            self.bus.adr[local_address_bits:] == address)
+
+        for index, register in enumerate(self.simple_csrs):
+            self.comb += [
+                register.wr_data.eq(self.bus.dat_w[:register.size]),
+                If(selected &
+                    (self.bus.adr[:local_address_bits] == index),
+                    register.wr_stb.eq(self.bus.we),
+                    register.rd_stb.eq(self.bus.re),
+                ),
+            ]
+
+        # The read mux is split into registered groups of eight and a group
+        # select.  The bridge's address is stable until after its two
+        # read-wait cycles, so the second stage still lands before ACK.
+        group_bits = 3
+        registers = self.simple_csrs
+        groups = [registers[start:start + (1 << group_bits)]
+            for start in range(0, len(registers), 1 << group_bits)]
+        group_data = [Signal(len(self.bus.dat_r)) for _ in groups]
+        group_r = Signal(max(local_address_bits - group_bits, 1))
+        selected_rr = Signal()
+        self.sync += [
+            selected_r.eq(selected),
+            local_address_r.eq(self.bus.adr[:local_address_bits]),
+            selected_rr.eq(selected_r),
+            group_r.eq(local_address_r[group_bits:]),
+            self.bus.dat_r.eq(0),
+            If(selected_rr, Case(group_r, {
+                index: self.bus.dat_r.eq(data)
+                for index, data in enumerate(group_data)
+            })),
+        ]
+        for data, group in zip(group_data, groups):
+            self.sync += [
+                data.eq(0),
+                Case(local_address_r[:group_bits], {
+                    index: data.eq(register.rd_data)
+                    for index, register in enumerate(group)
+                }),
+            ]
+
+
+# SoCCore resolves both classes during finalization, after Gate1SoC has been
+# constructed.  Keep the upstream submodules untouched and replace only this
+# process's Gate 1 CSR implementation.
+litex_wishbone.Wishbone2CSR = Gate1Wishbone2CSR
+csr_bus.CSRBank = Gate1CSRBank
 
 
 class Gate1PeripheralAHB2Wishbone(LiteXModule):
@@ -284,6 +410,11 @@ class Gate1Status(LiteXModule, AutoCSR):
         self._fail_address = CSRStorage(32, reset=0, description="Address of the first failed check")
         self._fail_expected = CSRStorage(32, reset=0, description="Expected value of the first failed check")
         self._fail_observed = CSRStorage(32, reset=0, description="Observed value of the first failed check")
+        self._profile_cpu = CSRStorage(32, reset=0, description="Profiled CPU/JIT milliseconds")
+        self._profile_gpu = CSRStorage(32, reset=0, description="Profiled GPU command milliseconds")
+        self._profile_accel = CSRStorage(32, reset=0, description="Profiled fast-path milliseconds")
+        self._profile_sync = CSRStorage(32, reset=0, description="Profiled fabric synchronization milliseconds")
+        self._profile_display = CSRStorage(32, reset=0, description="Profiled display-copy milliseconds")
         self._loader_state = CSRStorage(32, reset=0, description="Loader state (bits 7:0) and completed runs (bits 31:16)")
         self._loader_bytes = CSRStorage(32, reset=0, description="Payload bytes of the last image")
         self._loader_crc = CSRStorage(32, reset=0, description="Computed CRC-32 of the last image payload")
@@ -304,7 +435,7 @@ class Gate1Status(LiteXModule, AutoCSR):
 
 
 class Gate1SoC(tang_console.BaseSoC):
-    def __init__(self, ip_dir, place_option=3):
+    def __init__(self, ip_dir, place_option=3, route_option=1):
         # The AE350 RAM port is bridged straight to the DDR3 native port,
         # bypassing the SoC interconnect.
         GowinAE350.native_memory = True
@@ -363,10 +494,20 @@ class Gate1SoC(tang_console.BaseSoC):
         video_port = LiteDRAMNativePort("read",
             address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
             data_width    = gowin_ddr3.DATA_WIDTH)
+        self.gpu_accel = GPUAccelerator(self.platform,
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8))
+        self.bus.add_slave("gpu_accel", self.gpu_accel.bus, region=SoCRegion(
+            origin=GPU_ACCEL_BASE, size=0x1000, cached=False))
+        cpu_gpu_port = LiteDRAMNativePort("both",
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
+            data_width    = gowin_ddr3.DATA_WIDTH)
         shared_port = LiteDRAMNativePort("both",
             address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
             data_width    = gowin_ddr3.DATA_WIDTH)
-        self.ddr3_arbiter = DDR3PortArbiter(cpu_port, video_port, shared_port)
+        self.ddr3_rw_arbiter = DDR3RWArbiter(
+            cpu_port, self.gpu_accel.port, cpu_gpu_port)
+        self.ddr3_arbiter = DDR3PortArbiter(
+            cpu_gpu_port, video_port, shared_port)
         ddr_port = self.ddr3.port
         self.comb += [
             shared_port.cmd.connect(ddr_port.cmd, omit={"addr"}),
@@ -378,7 +519,8 @@ class Gate1SoC(tang_console.BaseSoC):
         # every crossing between them is synchronized.
         self.platform.add_false_path_constraints(
             self.crg.cd_sys.clk, self.crg.clk50,
-            self.ddr3.cd_ddr.clk, self.ddr3.memory_clk)
+            self.ddr3.cd_ddr.clk, self.ddr3.memory_clk,
+            self.crg.cd_hdmi.clk)
 
         # The shared board file describes this pin as 1.5 V even though its own
         # note says the 138K routing is 3.3 V.  AE350 makes the bank voltage
@@ -397,6 +539,7 @@ class Gate1SoC(tang_console.BaseSoC):
         self.platform.toolchain.options["use_cpu_as_gpio"] = 0
         self.platform.toolchain.options["multi_boot"] = 1
         self.platform.toolchain.options["place_option"] = place_option
+        self.platform.toolchain.options["route_option"] = route_option
         # Tang-Control's proven transport uses SystemVerilog sized casts and
         # block-local declarations despite its historical .v filenames.
         self.platform.toolchain.options["verilog_std"] = "sysv2017"
@@ -521,6 +664,11 @@ class Gate1SoC(tang_console.BaseSoC):
             0xc0: debug_rdata_comb.eq(self.gate1._fail_address.storage),
             0xc4: debug_rdata_comb.eq(self.gate1._fail_expected.storage),
             0xc8: debug_rdata_comb.eq(self.gate1._fail_observed.storage),
+            0x110: debug_rdata_comb.eq(self.gate1._profile_cpu.storage),
+            0x114: debug_rdata_comb.eq(self.gate1._profile_gpu.storage),
+            0x118: debug_rdata_comb.eq(self.gate1._profile_accel.storage),
+            0x11c: debug_rdata_comb.eq(self.gate1._profile_sync.storage),
+            0x120: debug_rdata_comb.eq(self.gate1._profile_display.storage),
             0xd0: debug_rdata_comb.eq(self.gate1._loader_state.storage),
             0xd4: debug_rdata_comb.eq(self.gate1._loader_bytes.storage),
             0xd8: debug_rdata_comb.eq(self.gate1._loader_crc.storage),
@@ -607,6 +755,9 @@ def main():
         help="Gowin DDR3/PLL IP generated by scripts/gen-ddr3-ip.sh")
     parser.add_argument("--place-option", type=int, default=3,
         help="Gowin placement strategy (default: 3)")
+    parser.add_argument("--route-option", type=int, default=1,
+        help="Gowin routing algorithm (default: 1, which closed the GPU "
+            "build's 75/100 MHz timing with placement 3)")
     parser.add_argument("--ae350-cpu-odiv", type=int, default=AE350_CPU_ODIV,
         help="AE350 PLL CPU-clock (CLKOUT1) divider on the 750 MHz VCO")
     parser.add_argument("--ae350-bus-odiv", type=int, default=AE350_BUS_ODIV,
@@ -616,7 +767,8 @@ def main():
     AE350_CPU_ODIV = args.ae350_cpu_odiv
     AE350_BUS_ODIV = args.ae350_bus_odiv
 
-    soc = Gate1SoC(ip_dir=args.ip_dir, place_option=args.place_option)
+    soc = Gate1SoC(ip_dir=args.ip_dir, place_option=args.place_option,
+        route_option=args.route_option)
     builder = Builder(
         soc,
         output_dir=args.output_dir,

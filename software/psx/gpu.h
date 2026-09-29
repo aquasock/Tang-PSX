@@ -43,6 +43,8 @@ struct psx_gpu {
 	uint32_t primitives;
 	uint32_t uploads;
 	uint32_t unknown_commands;
+	uint8_t hardware_accel;
+	uint8_t vram_cpu_dirty;
 };
 
 void psx_gpu_reset(struct psx_gpu *gpu, uint16_t *vram);
@@ -50,5 +52,7 @@ void psx_gpu_write_gp0(struct psx_gpu *gpu, uint32_t value);
 void psx_gpu_write_gp1(struct psx_gpu *gpu, uint32_t value);
 uint32_t psx_gpu_read_data(struct psx_gpu *gpu);
 uint32_t psx_gpu_read_status(const struct psx_gpu *gpu);
+/* Drain fabric rendering and invalidate cached VRAM before CPU reads it. */
+void psx_gpu_sync(struct psx_gpu *gpu);
 
 #endif

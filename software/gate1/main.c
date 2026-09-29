@@ -419,6 +419,11 @@ static void api_set_reg(uint32_t reg, uint32_t value)
 	case TPX_REG_FAIL_ADDRESS:  gate1_fail_address_write(value); break;
 	case TPX_REG_FAIL_EXPECTED: gate1_fail_expected_write(value); break;
 	case TPX_REG_FAIL_OBSERVED: gate1_fail_observed_write(value); break;
+	case TPX_REG_PROFILE_CPU:    gate1_profile_cpu_write(value); break;
+	case TPX_REG_PROFILE_GPU:    gate1_profile_gpu_write(value); break;
+	case TPX_REG_PROFILE_ACCEL:  gate1_profile_accel_write(value); break;
+	case TPX_REG_PROFILE_SYNC:   gate1_profile_sync_write(value); break;
+	case TPX_REG_PROFILE_DISPLAY: gate1_profile_display_write(value); break;
 	default: break;
 	}
 }

@@ -974,3 +974,50 @@ Continue from the proven Press Start state by testing controller-driven menu and
 - User Test: PASS
 
 ---
+
+## 29 COMMIT Unreleased 2026-09-29T09:02:06-07:00
+
+#### Coming From:
+
+Unreleased a404030
+
+#### Purpose:
+
+Move PlayStation polygon and rectangle rasterization from AE350 software into an FPGA fabric rasterizer drawing into DDR-resident VRAM, and close Gate 1 timing on the resulting core.
+
+#### Outcome:
+
+The new `gateware/gpu_rasterizer.sv` performs every per-pixel step of the portable renderer: incremental edge functions, exact quotient-and-remainder attribute stepping, texture and CLUT lookups through a two-line cache, shading, and mask handling. It writes the 1024x512 BGR555 VRAM, which now lives in DDR at `0x7fe00000`, through a 256-bit native port. The AE350 still decodes GP0 packets and performs the divide-based triangle setup. `gateware/gpu_accel.py` provides the Wishbone front end at `0xe9000000`: a 128-word descriptor FIFO, status, and completed-primitive and pixel counters. It also contains a batched descriptor DMA, `GPUCommandDMA`. Two `DDR3RWArbiter` instances in `gateware/ddr3_port_arbiter.py` serialize the DMA with the rasterizer, and the accelerator with the CPU, ahead of the existing CPU/video arbiter. `software/psx/gpu.c` streams primitives to the fabric when it is built with `PSX_GPU_ACCEL`, which `scripts/build-programs.sh` now sets for `psx_bios` and `psx_disc`. `psx_gpu_sync` drains the fabric and invalidates cached VRAM before any CPU read. Five cumulative profile registers at `0x110`-`0x120` report CPU, GPU, accelerator, sync, and display milliseconds, and `tools/ae350_run.py status` prints them. Hardware testing in the preceding session found three problems. First, waiting for the DMA-ready bit to fall was edge-sensitive and deadlocked Spyro at VBlank 33, and builds that did not wait for completion showed black and tan corruption. Second, the first DMA-fetched descriptor never completed on hardware, although `gateware/sim/test_gpu_command_dma.py` passes. Third, the pipelined `gate1-gpu-batched-ordering-pipe` place3 core (`bab814d9`) ran even though `sys_clk` failed at 72.62 MHz. Software therefore waits for the completed-primitive counter to reach the number of submitted primitives and writes descriptors directly over MMIO; the DMA remains in the gateware but is unused. This session closed timing from that core's source. A skid buffer now registers the CPU/video arbiter's command in both directions, which broke a valid-to-ready loop running from the scanout reservation FIFO through the DDR command CDC. The Gate 1 CSR read mux is two registered stages, still four cycles per access, and the bridge captures address and data on every idle cycle. In the rasterizer, attribute enables come from registered commit flags, row and column end conditions are registered flags, reset overrides only control registers, and read ready is constant. The accelerator's Wishbone read data is registered, the DDR read-return pipe gained a ready-side stage, and `gateware/ae350_gate1.py` gained `--route-option` with default 1. Gowin's `-replicate_resources` was tried and made timing worse. Of placements 1 to 4 at route option 1, only `build/gate1-gpu-final-place3` met all setup and hold timing: `sys_clk` Fmax 78.144 MHz and `ddr_clk` Fmax 107.693 MHz. Its 5,034,694-byte image, SHA-256 `dba1bf655fcca165d07dd8807f4c15a8186e63eba1f0ac63ad117e1b224e6e06` and CRC-32 `2cf878cc`, rebuilds byte for byte from the final tree. It replaced `cores/console138k/tang-psx-gate1.bin` and was verified on SD readback. The existing `tpx/psx_disc.tpx` (590,516 bytes, CRC-32 `de830b9f`, SHA-256 `8bf6c718340cd8cc70162dee0b6cb10d29dc7a51a646548d2fbb9cec163458db`) also rebuilds identically and was verified on SD readback. The core's self-checks passed with stage `0x80000001` and features `0xff`. Spyro then ran with zero program failure, stream overflow, or HDMI underflow, at 92 VBlanks in 5.0 s from VBlank 220, 203 in 17.0 s from VBlank 312, and 90 in 15.0 s from VBlank 515. In that last window CPU emulation took 13.5 s, the GPU 0.25 s, and the display copy 0.95 s. The user saw the polygon sequence running at about 2 FPS, unchanged from the previous core. All seven gateware simulations passed, including a CSR test extended to read 20 registers across three mux groups. The 40,000-primitive Verilator comparison of the fabric against the portable renderer matched in the same 33,271,453 cycles before and after the timing changes. All seven host regressions passed, including both exact BIOS logo checkpoints. The sanitizer-backed host tests must run without the `LD_PRELOAD` that `scripts/env.sh` exports for Gowin, because AddressSanitizer aborts when its runtime is not first. The `psx_bios` program, now also accelerated with VRAM in DDR, was not run on hardware in this cycle. `.ai/core-reference.md` gained TOOL-007 for the Gowin placement, routing, and replication options. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 29 with exactly six required sections, confirmed that 29 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. The fabric rasterizer moved rendering off the AE350 but did not change the visible frame rate, because CPU emulation now takes about 90 percent of wall time in Spyro's polygon sequence, so raising JIT coverage and CPU throughput is the next performance lever. Separately, either find why the first DMA-fetched descriptor never completes on hardware although simulation passes, or remove the unused DMA path to recover timing margin, since only one of four placements now meets timing. The accelerated `psx_bios` logo checkpoint still needs a hardware run on this core. Controller-driven gameplay, semi-transparency, and display-mode handling from entry 28 remain open.
+
+#### Files Modified:
+
+- gateware/ae350_gate1.py
+- gateware/ddr3_port_arbiter.py
+- gateware/gowin_ddr3.py
+- gateware/gpu_accel.py
+- gateware/gpu_rasterizer.sv
+- gateware/sim/test_ddr3_rw_arbiter.py
+- gateware/sim/test_gate1_csr.py
+- gateware/sim/test_gpu_command_dma.py
+- scripts/build-programs.sh
+- software/common/tpx_api.h
+- software/gate1/main.c
+- software/programs/psx_bios/main.c
+- software/programs/psx_disc/main.c
+- software/psx/gpu.c
+- software/psx/gpu.h
+- tests/psx_gpu_accel_diff.cpp
+- tests/test_psx_gpu_accel.py
+- tools/ae350_run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

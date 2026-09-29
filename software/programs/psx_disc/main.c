@@ -21,6 +21,7 @@
 #define WINDOW_BYTES         (WINDOW_SECTORS * PSX_CD_SECTOR_BYTES)
 #define REQUEST_TIMEOUT_MS   2000u
 #define RESULT_DONE          0xd15c0001u
+#define PSX_VRAM_BASE        0x7fe00000u
 
 enum window_state { WINDOW_EMPTY, WINDOW_FILLING, WINDOW_READY };
 
@@ -35,7 +36,8 @@ extern const uint8_t psx_bios_image[];
 extern const uint8_t psx_bios_image_end[];
 
 static uint8_t psx_ram[PSX_MAIN_RAM_BYTES];
-static uint16_t psx_vram[PSX_VRAM_PIXELS];
+static uint16_t *const psx_vram =
+	(uint16_t *)(uintptr_t)PSX_VRAM_BASE;
 static struct psx_machine machine;
 static struct window windows[2];
 static const struct tpx_api *api;
@@ -47,6 +49,8 @@ static uint64_t start_cycle;
 static uint32_t requests;
 static uint32_t retries;
 static uint32_t misses;
+static uint64_t profile_sync_cycles;
+static uint64_t profile_display_cycles;
 
 static uint64_t read_cycle(void)
 {
@@ -64,6 +68,11 @@ static uint64_t read_cycle(void)
 static uint32_t elapsed_ms(void)
 {
 	return (uint32_t)((read_cycle() - start_cycle) / (api->cpu_hz / 1000u));
+}
+
+static uint32_t profile_ms(uint64_t cycles)
+{
+	return (uint32_t)(cycles / (api->cpu_hz / 1000u));
 }
 
 static void request_window(int slot, uint32_t lba)
@@ -181,6 +190,12 @@ static void publish(void)
 	api->set_reg(TPX_REG_FAIL_ADDRESS, machine.cpu.pc);
 	api->set_reg(TPX_REG_FAIL_EXPECTED, (requests << 16) | (misses & 0xffffu));
 	api->set_reg(TPX_REG_FAIL_OBSERVED, machine.cpu.cp0[13]);
+	api->set_reg(TPX_REG_PROFILE_CPU, profile_ms(machine.profile_cpu_cycles));
+	api->set_reg(TPX_REG_PROFILE_GPU, profile_ms(machine.profile_gpu_cycles));
+	api->set_reg(TPX_REG_PROFILE_ACCEL,
+		profile_ms(machine.profile_accel_cycles));
+	api->set_reg(TPX_REG_PROFILE_SYNC, profile_ms(profile_sync_cycles));
+	api->set_reg(TPX_REG_PROFILE_DISPLAY, profile_ms(profile_display_cycles));
 }
 
 uint32_t main(const struct tpx_api *loader)
@@ -230,9 +245,14 @@ uint32_t main(const struct tpx_api *loader)
 			psx_machine_vblank(&machine);
 			next_vblank += FRAME_CYCLES;
 			if (++frames % REFRESH_FRAMES == 0u) {
+				uint64_t profile_start = read_cycle();
+				psx_gpu_sync(&machine.gpu);
+				profile_sync_cycles += read_cycle() - profile_start;
+				profile_start = read_cycle();
 				psx_machine_copy_display(&machine, framebuffer,
 					TPX_FRAMEBUFFER_WIDTH, TPX_FRAMEBUFFER_HEIGHT);
 				api->flush_dcache();
+				profile_display_cycles += read_cycle() - profile_start;
 			}
 		} else {
 			psx_machine_run(&machine, SERVICE_INSTRUCTIONS);

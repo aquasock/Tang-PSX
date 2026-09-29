@@ -2,6 +2,139 @@
 
 #include "gpu.h"
 
+#if PSX_GPU_ACCEL || PSX_GPU_ACCEL_TEST
+#define GPU_ACCEL_BASE      0xe9000000u
+#define GPU_ACCEL_MAGIC     0x47505531u
+#define GPU_ACCEL_TRIANGLE  0x47500001u
+#define GPU_ACCEL_RECTANGLE 0x47500002u
+#define GPU_ACCEL_BATCH_READY (1u << 3)
+#define GPU_ACCEL_BUFFER_WORDS 4096u
+
+#if PSX_GPU_ACCEL_TEST
+extern int psx_gpu_accel_test_available;
+extern void psx_gpu_accel_test_push(uint32_t value);
+static void cache_writeback_invalidate(void)
+{
+}
+
+static int accel_available(void)
+{
+	return psx_gpu_accel_test_available;
+}
+
+static void accel_reset(void)
+{
+}
+
+static void accel_finish_primitive(void)
+{
+}
+
+static void accel_wait(void)
+{
+}
+
+static void accel_push(uint32_t value)
+{
+	psx_gpu_accel_test_push(value);
+}
+#else
+static volatile uint32_t *const accel =
+	(volatile uint32_t *)(uintptr_t)GPU_ACCEL_BASE;
+static _Alignas(32) uint32_t accel_buffer[2][GPU_ACCEL_BUFFER_WORDS];
+static uint32_t accel_buffer_index;
+static uint32_t accel_buffer_words;
+static uint32_t accel_expected_primitives;
+
+static void cache_writeback_invalidate(void)
+{
+	uint32_t command = 6u;
+	__asm__ volatile ("fence rw, rw\n\tcsrw 0x7cc, %0\n\tfence rw, rw"
+		: : "r"(command) : "memory");
+}
+
+static int accel_available(void)
+{
+	return accel[0] == GPU_ACCEL_MAGIC;
+}
+
+static void accel_reset(void)
+{
+	accel[1] = 1u;
+	accel_expected_primitives = 0;
+}
+
+static void accel_finish_primitive(void)
+{
+	++accel_expected_primitives;
+}
+
+static void accel_submit(void)
+{
+	if (accel_buffer_words == 0u)
+		return;
+	cache_writeback_invalidate();
+	while (!(accel[1] & GPU_ACCEL_BATCH_READY))
+		;
+	accel[4] = (uint32_t)(uintptr_t)accel_buffer[accel_buffer_index];
+	accel[5] = accel_buffer_words;
+	accel_buffer_words = 0;
+	accel_buffer_index ^= 1u;
+}
+
+static void accel_wait(void)
+{
+	accel_submit();
+	/* A ready transition can be shorter than one peripheral read.  The
+	 * completed-primitive counter is level-sensitive and proves every queued
+	 * descriptor has passed through the rasterizer. */
+	while (accel[2] != accel_expected_primitives)
+		;
+	while (!(accel[1] & 2u))
+		;
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+}
+
+static void accel_push(uint32_t value)
+{
+	/* The DDR descriptor-DMA transport is retained in gateware for diagnosis,
+	 * but physical testing showed its first cache-backed batch can arrive
+	 * stale.  The registered MMIO word path is exact and already proven on
+	 * hardware. */
+	while (!(accel[1] & 1u))
+		;
+	accel[0] = value;
+}
+#endif
+
+static void accel_before_hardware(struct psx_gpu *gpu)
+{
+	if (gpu->vram_cpu_dirty) {
+		cache_writeback_invalidate();
+		/* CPU uploads/fills bypass the rasterizer's texture-line cache.  The
+		 * queue is idle here, so resetting the fabric safely drops stale lines. */
+		accel_reset();
+		gpu->vram_cpu_dirty = 0;
+	}
+}
+
+static void accel_before_software(struct psx_gpu *gpu, int writes)
+{
+	if (!gpu->hardware_accel)
+		return;
+	accel_wait();
+	cache_writeback_invalidate();
+	gpu->vram_cpu_dirty = writes ? 1u : 0u;
+}
+#else
+static int accel_available(void) { return 0; }
+static void accel_before_software(struct psx_gpu *gpu, int writes)
+{
+	(void)gpu;
+	(void)writes;
+}
+#endif
+
 struct vertex {
 	int32_t x;
 	int32_t y;
@@ -244,6 +377,46 @@ static void draw_triangle(struct psx_gpu *gpu, const struct vertex *a,
 			ea_dy * ca + eb_dy * cb + ec_dy * cc, area);
 	}
 
+#if PSX_GPU_ACCEL || PSX_GPU_ACCEL_TEST
+	if (gpu->hardware_accel) {
+		uint32_t flags = (textured ? 1u : 0u) | (raw ? 2u : 0u) |
+			((gpu->mask_bits & 2u) ? 4u : 0u) |
+			((gpu->mask_bits & 1u) ? 8u : 0u);
+		accel_before_hardware(gpu);
+		accel_push(GPU_ACCEL_TRIANGLE);
+		accel_push(flags);
+		accel_push((uint32_t)min_x);
+		accel_push((uint32_t)max_x);
+		accel_push((uint32_t)min_y);
+		accel_push((uint32_t)max_y);
+		accel_push((uint32_t)area);
+		accel_push((uint32_t)row_ea);
+		accel_push((uint32_t)row_eb);
+		accel_push((uint32_t)row_ec);
+		accel_push((uint32_t)ea_dx);
+		accel_push((uint32_t)eb_dx);
+		accel_push((uint32_t)ec_dx);
+		accel_push((uint32_t)ea_dy);
+		accel_push((uint32_t)eb_dy);
+		accel_push((uint32_t)ec_dy);
+		accel_push(clut);
+		accel_push(page);
+		for (n = 0; n < 5u; ++n) {
+			const struct interpolant zero = {0};
+			const struct interpolant *value = n < attributes ?
+				&attribute[n] : &zero;
+			accel_push((uint32_t)value->q);
+			accel_push((uint32_t)value->r);
+			accel_push((uint32_t)value->qx);
+			accel_push((uint32_t)value->rx);
+			accel_push((uint32_t)value->qy);
+			accel_push((uint32_t)value->ry);
+		}
+		accel_finish_primitive();
+		return;
+	}
+#endif
+
 	/* Colour constant along x: each row is a single-value fill. */
 	flat_rows = attribute[0].qx == 0 && attribute[0].rx == 0 &&
 		attribute[1].qx == 0 && attribute[1].rx == 0 &&
@@ -342,6 +515,7 @@ static void draw_line(struct psx_gpu *gpu, struct vertex a, struct vertex b)
 	int32_t error = dx + dy;
 	int32_t steps = dx > dy_abs ? dx : dy_abs;
 	int32_t count = 0;
+	accel_before_software(gpu, 1);
 
 	for (;;) {
 		int32_t r = steps ? a.r + (b.r - a.r) * count / steps : a.r;
@@ -415,6 +589,45 @@ static void process_rectangle(struct psx_gpu *gpu, uint32_t command)
 	case 2: width = 8; height = 8; break;
 	default: width = 16; height = 16; break;
 	}
+#if PSX_GPU_ACCEL || PSX_GPU_ACCEL_TEST
+	if (gpu->hardware_accel) {
+		int32_t left = origin.x;
+		int32_t top = origin.y;
+		int32_t right = origin.x + (int32_t)width - 1;
+		int32_t bottom = origin.y + (int32_t)height - 1;
+		uint32_t flags = (textured ? 1u : 0u) | ((command & 1u) ? 2u : 0u) |
+			((gpu->mask_bits & 2u) ? 4u : 0u) |
+			((gpu->mask_bits & 1u) ? 8u : 0u);
+		if (left < (int32_t)gpu->draw_x0) left = (int32_t)gpu->draw_x0;
+		if (top < (int32_t)gpu->draw_y0) top = (int32_t)gpu->draw_y0;
+		if (right > (int32_t)gpu->draw_x1) right = (int32_t)gpu->draw_x1;
+		if (bottom > (int32_t)gpu->draw_y1) bottom = (int32_t)gpu->draw_y1;
+		if (left < 0) left = 0;
+		if (top < 0) top = 0;
+		if (right >= (int32_t)PSX_VRAM_WIDTH) right = PSX_VRAM_WIDTH - 1;
+		if (bottom >= (int32_t)PSX_VRAM_HEIGHT) bottom = PSX_VRAM_HEIGHT - 1;
+		if (left <= right && top <= bottom) {
+			accel_before_hardware(gpu);
+			accel_push(GPU_ACCEL_RECTANGLE);
+			accel_push(flags);
+			accel_push((uint32_t)left);
+			accel_push((uint32_t)top);
+			accel_push((uint32_t)(right - left + 1));
+			accel_push((uint32_t)(bottom - top + 1));
+			accel_push((uint32_t)origin.r);
+			accel_push((uint32_t)origin.g);
+			accel_push((uint32_t)origin.b);
+			accel_push(((uv & 0xffu) + (uint32_t)(left - origin.x)) & 0xffu);
+			accel_push((((uv >> 8) & 0xffu) + (uint32_t)(top - origin.y)) & 0xffu);
+			accel_push(uv >> 16);
+			accel_push(gpu->draw_mode);
+			accel_finish_primitive();
+		}
+		++gpu->primitives;
+		return;
+	}
+#endif
+	accel_before_software(gpu, 1);
 	for (y = 0; y < height; ++y) {
 		for (x = 0; x < width; ++x) {
 			uint16_t pixel;
@@ -448,6 +661,7 @@ static void process_packet(struct psx_gpu *gpu)
 		uint32_t start_y = (gpu->packet[1] >> 16) & 0x1ffu;
 		uint32_t width = gpu->packet[2] & 0x3ffu;
 		uint32_t height = (gpu->packet[2] >> 16) & 0x1ffu;
+		accel_before_software(gpu, 1);
 		for (y = 0; y < height; ++y)
 			for (x = 0; x < width; ++x)
 				gpu->vram[((start_y + y) & 511u) * 1024u +
@@ -480,6 +694,7 @@ static void process_packet(struct psx_gpu *gpu)
 		uint32_t height = gpu->packet[3] >> 16;
 		if (width == 0u) width = 0x400u;
 		if (height == 0u) height = 0x200u;
+		accel_before_software(gpu, 1);
 		for (y = 0; y < height; ++y)
 			for (x = 0; x < width; ++x)
 				gpu->vram[((dy + y) & 511u) * 1024u +
@@ -487,6 +702,7 @@ static void process_packet(struct psx_gpu *gpu)
 				gpu->vram[((sy + y) & 511u) * 1024u +
 					((sx + x) & 1023u)];
 	} else if (type == 5u) {
+		accel_before_software(gpu, 1);
 		gpu->image_x = gpu->packet[1] & 0x3ffu;
 		gpu->image_y = (gpu->packet[1] >> 16) & 0x1ffu;
 		gpu->image_w = gpu->packet[2] & 0xffffu;
@@ -497,6 +713,7 @@ static void process_packet(struct psx_gpu *gpu)
 		gpu->image_pixels = gpu->image_w * gpu->image_h;
 		++gpu->uploads;
 	} else if (type == 6u) {
+		accel_before_software(gpu, 0);
 		gpu->image_x = gpu->packet[1] & 0x3ffu;
 		gpu->image_y = (gpu->packet[1] >> 16) & 0x1ffu;
 		gpu->image_w = gpu->packet[2] & 0xffffu;
@@ -548,6 +765,15 @@ static uint32_t packet_length(uint32_t value)
 void psx_gpu_reset(struct psx_gpu *gpu, uint16_t *vram)
 {
 	uint32_t i;
+	int hardware_accel = accel_available();
+#if PSX_GPU_ACCEL
+	if (hardware_accel) {
+		accel_wait();
+		accel_buffer_index = 0;
+		accel_buffer_words = 0;
+		accel_reset();
+	}
+#endif
 	for (i = 0; i < PSX_VRAM_PIXELS; ++i)
 		vram[i] = 0;
 	gpu->vram = vram;
@@ -576,6 +802,8 @@ void psx_gpu_reset(struct psx_gpu *gpu, uint16_t *vram)
 	gpu->primitives = 0;
 	gpu->uploads = 0;
 	gpu->unknown_commands = 0;
+	gpu->hardware_accel = (uint8_t)hardware_accel;
+	gpu->vram_cpu_dirty = (uint8_t)hardware_accel;
 }
 
 void psx_gpu_write_gp0(struct psx_gpu *gpu, uint32_t value)
@@ -662,6 +890,7 @@ uint32_t psx_gpu_read_data(struct psx_gpu *gpu)
 
 	if (gpu->read_pixel >= gpu->read_pixels)
 		return gpu->data_read;
+	accel_before_software(gpu, 0);
 	value = 0;
 	for (n = 0; n < 2u && gpu->read_pixel < gpu->read_pixels; ++n) {
 		uint32_t pixel = gpu->read_pixel++;
@@ -679,4 +908,17 @@ uint32_t psx_gpu_read_status(const struct psx_gpu *gpu)
 	if (direction == 1u || direction == 2u)
 		status |= 1u << 25;
 	return status;
+}
+
+void psx_gpu_sync(struct psx_gpu *gpu)
+{
+#if PSX_GPU_ACCEL || PSX_GPU_ACCEL_TEST
+	if (gpu->hardware_accel) {
+		accel_wait();
+		cache_writeback_invalidate();
+		gpu->vram_cpu_dirty = 0;
+	}
+#else
+	(void)gpu;
+#endif
 }

@@ -122,6 +122,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How do the GTE lighting and color commands calculate? | GTE | GTE-002 |
 | What limits 75 MHz timing in LiteDRAM's Wishbone burst frontend? | TOOL | TOOL-006 |
 | How do I regenerate Gowin IP without the GUI? | TOOL | TOOL-001, TOOL-002 |
+| Which Gowin place-and-route options can change timing closure? | TOOL | TOOL-007 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
@@ -165,6 +166,7 @@ TOOL-003: "Gowin SDC cannot attach a clock to a net merged away by synthesis (TA
 TOOL-004: "LiteX registers its Wishbone-to-CSR bridge only when the SoC has a LiteDRAM sdram core"
 TOOL-005: "LiteX CSRStatus(fields=...) drives status from its field signals; drive the fields, not status"
 TOOL-006: "LiteDRAMWishbone2Native's narrow-to-wide burst path compares full addresses combinationally to merge and cache; it fails 75 MHz on GW5AST behind the AE350"
+TOOL-007: "SUG100 section 8.3: set_option -place_option 0-4, -route_option 0-2 select placement and routing algorithms; -replicate_resources 1 replicates high-fanout logic"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
@@ -506,6 +508,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
     - "LiteDRAM commit c454a44 (third_party/litedram), litedram/frontend/wishbone.py"
   verification: "Timing paths in core-log entries 17 and 19; replacing the frontend moved three of four placement variants from failing to passing."
 
+- record_id: TOOL-007
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "Gowin place-and-route routing and replication options"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "SUG100-4.4.2E section 8.3 documents the project options set_option -route_option <0|1|2> (0 the default routing algorithm, 1 and 2 alternative routing algorithms) and set_option -replicate_resources <0|1> (1 replicates high-fanout resources to reduce fanout and improve timing), alongside -place_option <0|1|2|3|4> (0 the default placement algorithm). Gowin EDA 1.9.11.03 gw_sh accepts all three in run.tcl."
+  consequence: "gateware/ae350_gate1.py passes --place-option and --route-option into the LiteX Gowin toolchain options, which emits them as set_option lines; resource replication is not enabled."
+  sources:
+    - "Gowin Software User Guide SUG100-4.4.2E, section 8.3 Command Description, shipped as IDE/doc/EN/SUG100-4.4.2E_Gowin Software User Guide.pdf in Gowin EDA 1.9.11.03 (SHA-256 708f510811c6deb9320da118c7f04f656da41a54a62291cf8079ffcb40870f83)"
+  verification: "On 2026-09-29 (core-log entry 29) the same Gate 1 netlist at placement 3 routed to different timing with route options 0, 1, and 2, and enabling replicate_resources changed every placement's result."
+
 - record_id: TOOL-001
   kind: TOOLCHAIN
   topic_id: TOOL
@@ -646,5 +660,5 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
 - A `core-syntax.md` audit is required whenever this file changes, per `.ai/core.md`.
 
 ```yaml
-last_reviewed: 2026-09-28
+last_reviewed: 2026-09-29
 ```

@@ -52,7 +52,7 @@ for name in "${programs[@]}"; do
         fi
         cp "$bios" "$out/scph1001.bin"
         extra_sources=("$PROJECT_ROOT"/software/psx/*.c)
-        program_cflags=(-O3 -flto)
+        program_cflags=(-O3 -flto -DPSX_GPU_ACCEL=1)
     fi
     if [[ "$name" == psx_perf ]]; then
         extra_sources=("$PROJECT_ROOT"/software/psx/*.c)
