@@ -1269,3 +1269,39 @@ Profile Lightrec against the JIT on the same stable Spyro scene and investigate 
 - User Test: PASS
 
 ---
+
+## 37 COMMIT Unreleased 2026-09-29T15:23:38-07:00
+
+#### Coming From:
+
+Unreleased 88c4ac3
+
+#### Purpose:
+
+Move PSX display extraction from the AE350 CPU into a fabric blitter so HDMI updates on every emulated VBlank instead of every third one.
+
+#### Outcome:
+
+Added `gateware/display_blitter.py`, a Wishbone peripheral at `0xea000000` with its own LiteDRAM native port that reads one 1024-pixel PSX VRAM row at a time from `0x7fe00000`, caches it for reuse, scales nearest-neighbour to 640x480, converts BGR555 to RGB565, and writes the `0x7ff00000` scanout framebuffer; Gate 1 chains it behind the CPU and GPU port with a second `DDR3RWArbiter` ahead of the video arbiter. `software/common/psx_display.h` detects its `DSP1` magic and runs a blocking blit, and `psx_bios` and `psx_disc` use it every VBlank while keeping the CPU copy every third frame as a fallback. `gateware/sim/test_display_blitter.py` matched all 307,200 pixels of a wrapped 320x240 source, and the DDR arbiter, CSR, and command-DMA simulations plus the Lightning, Lightrec, and BIOS exact-framebuffer regressions pass. Of the four placements only placement 2 met timing, at 78.556 MHz sys_clk Fmax; placements 1, 3, and 4 failed on clock-enable fanout from the blitter state into `source_y`, `y_accum`, and `cached_valid`. Logic rose from 19,246 to 20,211 of 138,240 and BSRAM from 121 to 122. Placement 2's core, SHA-256 `0b5fa4068e4cd498b6a86459a033832afcf7a038dc51570c4c814fb03dbef96c`, was written to `cores/console138k/tang-psx-gate1.bin` (5,034,694 bytes, CRC32 `5eaf3f21`) replacing the earlier placement-3 core, and `psx_disc_lightrec.tpx` (811,480 bytes, CRC32 `d3196572`) was SD-readback verified. Spyro reached its menu with a correct image and no failure or HDMI underflow, and the user reported the same game speed with two to three times more visible frames. Over about 133 s the emulator averaged 12.99 VBlanks per second with CPU, GPU, blocking display, and sync taking 71%, 24.5%, 25.8%, and 0.2% of wall time. The pre-change HDMI capture showed about 5.2 visible updates per second; the post-change visible rate was not measured because the USB capture card lost HDMI lock.
+
+#### Next Steps:
+
+Make the blit asynchronous or double-buffered so emulation continues while the fabric copies the frame, recovering most of the 25.8% blocking display time, then instrument Lightrec compiled, interpreted, compile, and invalidation time on AE350 to raise the emulation rate. Pipeline the blitter's clock-enable paths if more placements must meet timing, and measure visible frame rate by HDMI capture once the capture card locks reliably.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/display_blitter.py
+- gateware/sim/test_display_blitter.py
+- software/common/psx_display.h
+- software/programs/psx_bios/main.c
+- software/programs/psx_disc/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

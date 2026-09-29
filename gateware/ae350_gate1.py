@@ -29,6 +29,7 @@ from litedram.common import LiteDRAMNativePort
 import gowin_ddr3
 from ae350_ram_bridge import Gate1RAMBridge
 from ddr3_port_arbiter import DDR3PortArbiter, DDR3RWArbiter
+from display_blitter import DisplayBlitter
 from gpu_accel import GPUAccelerator
 from stream_loader import StreamLoader
 
@@ -45,6 +46,7 @@ AE350_BUS_ODIV = 10
 MAIN_RAM_BASE = 0x4000_0000
 FRAMEBUFFER_BASE = 0x7ff0_0000
 GPU_ACCEL_BASE = 0xe900_0000
+DISPLAY_BLITTER_BASE = 0xea00_0000
 FRAMEBUFFER_FIFO_BYTES = 4096
 HDMI_TIMINGS = {
     # The proven Tang Console PHY uses a 125 MHz serializer clock divided by
@@ -498,7 +500,15 @@ class Gate1SoC(tang_console.BaseSoC):
             address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8))
         self.bus.add_slave("gpu_accel", self.gpu_accel.bus, region=SoCRegion(
             origin=GPU_ACCEL_BASE, size=0x1000, cached=False))
+        self.display_blitter = DisplayBlitter(
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8))
+        self.bus.add_slave("display_blitter", self.display_blitter.bus,
+            region=SoCRegion(
+                origin=DISPLAY_BLITTER_BASE, size=0x1000, cached=False))
         cpu_gpu_port = LiteDRAMNativePort("both",
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
+            data_width    = gowin_ddr3.DATA_WIDTH)
+        cpu_gpu_display_port = LiteDRAMNativePort("both",
             address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
             data_width    = gowin_ddr3.DATA_WIDTH)
         shared_port = LiteDRAMNativePort("both",
@@ -506,8 +516,10 @@ class Gate1SoC(tang_console.BaseSoC):
             data_width    = gowin_ddr3.DATA_WIDTH)
         self.ddr3_rw_arbiter = DDR3RWArbiter(
             cpu_port, self.gpu_accel.port, cpu_gpu_port)
+        self.display_rw_arbiter = DDR3RWArbiter(
+            cpu_gpu_port, self.display_blitter.port, cpu_gpu_display_port)
         self.ddr3_arbiter = DDR3PortArbiter(
-            cpu_gpu_port, video_port, shared_port)
+            cpu_gpu_display_port, video_port, shared_port)
         ddr_port = self.ddr3.port
         self.comb += [
             shared_port.cmd.connect(ddr_port.cmd, omit={"addr"}),

@@ -256,8 +256,9 @@ python3 tools/ae350_run.py run psx_disc.tpx --reset --detach --timeout 120
 The program requests 32-sector windows through the loader's disc API and
 reads ahead one window. VBlank runs at 60 Hz of emulated time, and while the
 CPU only waits for it the machine clock skips ahead to the next frame, so
-device latency seen by software matches hardware. HDMI is refreshed every third
-frame. It runs until the core is reset and publishes VBlanks, sectors, requests,
+device latency seen by software matches hardware. When Gate 1's display
+blitter is present, HDMI is refreshed every VBlank; otherwise the CPU copies
+the display every third frame. It runs until the core is reset and publishes VBlanks, sectors, requests,
 retries, and cache misses once per second; Tang-Control's `status` lists the
 disc it serves. The runner's `--detach` option returns after the image starts,
 leaving the emulator active.
@@ -319,6 +320,17 @@ The system PLL supplies a 125 MHz HDMI serializer clock, divided by five for a
 25 MHz pixel clock. Standard 640x480 blanking produces a 59.52 Hz refresh rate.
 The BIOS program converts the active display region from its separate
 1024x512 BGR555 PlayStation VRAM into this scanout surface.
+
+The display blitter at `0xea000000` performs that conversion in fabric. It reads
+PSX VRAM at `0x7fe00000` one source row at a time through its own DDR3 port,
+scales nearest-neighbour to 640x480, converts BGR555 to RGB565, and writes the
+framebuffer. Its registers are magic `0x44535031` (`DSP1`) at offset `0x00`;
+status at `0x04` (bit 0 ready, bit 1 busy, bit 2 error; writing 1 to bit 0
+starts a blit); origin `x | y << 16` at `0x08`, wrapped within VRAM; size
+`w | h << 16` at `0x0c`, at most 640x480; completed frames at `0x10`; and busy
+cycles at `0x14`. `software/common/psx_display.h` detects the blitter by its
+magic and blocks until the blit finishes; the BIOS and disc programs fall back
+to the CPU copy when it is absent.
 
 ## Build
 

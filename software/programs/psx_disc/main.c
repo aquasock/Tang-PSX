@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "machine.h"
+#include "psx_display.h"
 #include "tpx_api.h"
 #ifdef PSX_DISC_LIGHTREC
 #include "psx_lightrec.h"
@@ -20,7 +21,7 @@
 #define RUN_TIMEOUT_SECONDS  0u       /* zero runs until the core is reset */
 #endif
 #define FRAME_CYCLES         564480u    /* 33.8688 MHz / 60 */
-#define REFRESH_FRAMES       3u
+#define SOFTWARE_REFRESH_FRAMES 3u
 #define SERVICE_INSTRUCTIONS 256u
 #define WINDOW_SECTORS       32u
 #define WINDOW_BYTES         (WINDOW_SECTORS * PSX_CD_SECTOR_BYTES)
@@ -214,11 +215,13 @@ uint32_t main(const struct tpx_api *loader)
 	uint32_t next_vblank = FRAME_CYCLES;
 	uint32_t next_publish = 1000u;
 	uint32_t frames = 0;
+	uint32_t fabric_display;
 #ifdef PSX_DISC_LIGHTREC
 	uint32_t flags;
 #endif
 
 	api = loader;
+	fabric_display = (uint32_t)psx_display_available();
 #ifdef PSX_DISC_LIGHTREC
 	tpx_runtime_bind(api, 0x8002bad4u);
 #endif
@@ -266,14 +269,21 @@ uint32_t main(const struct tpx_api *loader)
 		if ((int32_t)(machine.cpu.cycles - next_vblank) >= 0) {
 			psx_machine_vblank(&machine);
 			next_vblank += FRAME_CYCLES;
-			if (++frames % REFRESH_FRAMES == 0u) {
+			++frames;
+			if (fabric_display ||
+			    frames % SOFTWARE_REFRESH_FRAMES == 0u) {
 				uint64_t profile_start = read_cycle();
 				psx_gpu_sync(&machine.gpu);
 				profile_sync_cycles += read_cycle() - profile_start;
 				profile_start = read_cycle();
-				psx_machine_copy_display(&machine, framebuffer,
-					TPX_FRAMEBUFFER_WIDTH, TPX_FRAMEBUFFER_HEIGHT);
-				api->flush_dcache();
+				if (fabric_display) {
+					psx_display_blit(&machine.gpu);
+				} else {
+					psx_machine_copy_display(&machine, framebuffer,
+						TPX_FRAMEBUFFER_WIDTH,
+						TPX_FRAMEBUFFER_HEIGHT);
+					api->flush_dcache();
+				}
 				profile_display_cycles += read_cycle() - profile_start;
 			}
 		} else {

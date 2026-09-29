@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "machine.h"
+#include "psx_display.h"
 #include "tpx_api.h"
 #ifdef PSX_BIOS_LIGHTREC
 #include "memmanager.h"
@@ -38,6 +39,7 @@ static uint64_t elapsed_cycles;
 static uint64_t display_cycles;
 static uint64_t profile_vblank_cycles;
 static uint32_t counter_hz;
+static uint32_t fabric_display;
 
 /*
  * Full 64-bit cycle count. A single emulated operation can outlast the 5.7 s
@@ -135,9 +137,13 @@ static void copy_display(const struct tpx_api *api,
 {
 	uint64_t start = read_cycle();
 	psx_gpu_sync(&machine.gpu);
-	psx_machine_copy_display(&machine, framebuffer,
-		TPX_FRAMEBUFFER_WIDTH, TPX_FRAMEBUFFER_HEIGHT);
-	api->flush_dcache();
+	if (fabric_display) {
+		psx_display_blit(&machine.gpu);
+	} else {
+		psx_machine_copy_display(&machine, framebuffer,
+			TPX_FRAMEBUFFER_WIDTH, TPX_FRAMEBUFFER_HEIGHT);
+		api->flush_dcache();
+	}
 	display_cycles += read_cycle() - start;
 }
 
@@ -161,6 +167,7 @@ uint32_t main(const struct tpx_api *api)
 #endif
 
 	counter_hz = api->cpu_hz;
+	fabric_display = (uint32_t)psx_display_available();
 	api->set_reg(TPX_REG_STAGE, 0x00010001u);
 	api->set_reg(TPX_REG_FAILURE, 0);
 	log_text(api, "SCPH-1001 BIOS start\n");
