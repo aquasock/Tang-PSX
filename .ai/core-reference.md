@@ -73,6 +73,14 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
   name: "PlayStation Geometry Transformation Engine"
   description: "COP2 register behavior, command encoding, fixed-point calculations, saturation, and pipeline timing."
 
+- topic_id: PSXGPU
+  name: "PlayStation GPU"
+  description: "GPU I/O, commands, status, drawing, transfers, display state, and VRAM layout."
+
+- topic_id: PSXIO
+  name: "PlayStation memory map and peripherals"
+  description: "Main RAM, scratchpad, BIOS, interrupts, DMA, timers, CD-ROM, and SPU register behavior."
+
 - topic_id: TOOL
   name: "Toolchain behavior"
   description: "Gowin EDA and LiteX/Migen behavior that affects correctness or reproducibility."
@@ -105,6 +113,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How much of a system-clock cycle do the AE350 macro's RAM-port inputs need? | AE350 | AE350-006 |
 | Which CPU semantics must the R3000A interpreter preserve? | PSXCPU | PSXCPU-001 |
 | Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
+| How are PlayStation GPU commands, status, transfers, drawing, and VRAM laid out? | PSXGPU | PSXGPU-001 |
+| Which PlayStation address ranges, interrupts, and DMA channels are needed for BIOS startup? | PSXIO | PSXIO-001 |
 | What limits 75 MHz timing in LiteDRAM's Wishbone burst frontend? | TOOL | TOOL-006 |
 | How do I regenerate Gowin IP without the GUI? | TOOL | TOOL-001, TOOL-002 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
@@ -135,6 +145,8 @@ AE350-006: "Gowin's timing model gives the AE350_SOC RAM-port (DDR_H*) inputs ab
 AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32 B lines, inferred), mmsc_cfg = 0x2007F039; fence.i makes D-cache stores visible to instruction fetch"
 PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
 GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
+PSXGPU-001: "GPU uses GP0/GP1 at 1F801810h/1F801814h and 1024x512 16-bit VRAM; GP0 covers drawing, fills, copies, and CPU/VRAM transfers"
+PSXIO-001: "BIOS startup uses mirrored 2 MiB RAM, scratchpad, 512 KiB BIOS, IRQ state, and DMA channels 2 (GPU) and 6 (OTC)"
 TOOL-001: "gw_sh create_ipc/set_property/generate_target regenerate IP headlessly; read_ipc segfaults in batch mode"
 TOOL-002: "GowinModGen -do <file>.mod regenerates PLL wrappers; PLL_INIT ships in IDE/ipcore/PLL_ADV/data/PLL/pll_init.v"
 TOOL-003: "Gowin SDC cannot attach a clock to a net merged away by synthesis (TA2003); constrain the surviving PLL output net"
@@ -375,6 +387,35 @@ TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 b
     - "PSX-SPX, Geometry Transformation Engine (GTE), https://psx-spx.consoledev.net/ps1/cpu/gte/geometrytransformationenginegte/"
     - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/gte-instructions.cc, gte-internal.h, and gte-transfer.cc, https://github.com/grumpycoders/pcsx-redux"
   verification: "Six generated GTE vectors covering normal-range MVMVA, RTPS, RTPT, NCLIP, AVSZ3, and AVSZ4 produced 31 expected register results both natively and on the AE350 in core-log entry 23. No original PlayStation hardware comparison was made, so this reverse-engineered behavior remains INFERRED."
+
+- record_id: PSXGPU-001
+  kind: PROCESSOR
+  topic_id: PSXGPU
+  title: "PlayStation GPU ports, command stream, and VRAM"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "The PlayStation GPU is accessed through GP0/GPUREAD at 1F801810h and GP1/GPUSTAT at 1F801814h. It owns 1024x512 16-bit VRAM. GP0 packets control drawing environment, polygons, lines, rectangles, fills, VRAM copies, and CPU-to-VRAM or VRAM-to-CPU image transfers; GP1 controls reset, command buffering, DMA direction, display enable, display origin/ranges/mode, and status queries. Native pixels use 5-bit red, green, and blue fields, with bit 15 used for masking/semi-transparency state."
+  consequence: "software/psx/gpu.c parses the startup subset of GP0/GP1, rasterizes into BGR555 VRAM, and exposes display state for conversion into Gate 1's RGB565 framebuffer. Unimplemented texture-window details, polyline packets, blending accuracy, dithering, and timing remain outside the hardware-proven logo checkpoint."
+  sources:
+    - "PSX-SPX, GPU I/O Ports, DMA Channels, Commands, VRAM, https://psx-spx.consoledev.net/ps1/gpu/i-o-ports-dma-channels-commands-vram/"
+    - "PSX-SPX, GPU Status Register, https://psx-spx.consoledev.net/ps1/gpu/status-register/"
+    - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/gpu.{cc,h}, src/core/psxhw.cc, and src/gpu/soft, https://github.com/grumpycoders/pcsx-redux"
+  verification: "The SCPH-1001 ROM issued 10,768 accepted GPU words with zero unknown commands, 414 primitives, and 63 image uploads; the native regression produced a deterministic framebuffer and the AE350 displayed the matching complete startup logo in core-log entry 24. No comparison against original GPU electrical timing or pixel-edge behavior was made, so the record remains INFERRED."
+
+- record_id: PSXIO-001
+  kind: PROCESSOR
+  topic_id: PSXIO
+  title: "PlayStation BIOS-visible memory, interrupt, and DMA map"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "The startup-visible map includes 2 MiB main RAM mirrored through the first 8 MiB, 1 KiB scratchpad at 1F800000h, memory and peripheral registers beginning at 1F801000h, and a 512 KiB BIOS at 1FC00000h. I_STAT/I_MASK aggregate peripheral interrupts. DMA channel 2 moves GPU block and linked-list streams, while channel 6 constructs the reverse ordering table; DICR records channel completion and can raise the DMA interrupt."
+  consequence: "software/psx/machine.c supplies these mappings plus the startup register behavior for memory control, timers, CD-ROM, and SPU, generates VBlank interrupt state, and implements GPU and OTC DMA. It is a startup-focused model rather than a cycle-accurate peripheral implementation."
+  sources:
+    - "PSX-SPX, Memory Map, https://psx-spx.consoledev.net/ps1/kernelbios/memory-map/"
+    - "PSX-SPX, I/O Map, https://psx-spx.consoledev.net/ps1/system/iomap/"
+    - "PSX-SPX, DMA Channels, https://psx-spx.consoledev.net/ps1/system/dmachannels/"
+    - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/psxmem.cc, psxhw.cc, and psxdma.{cc,h}, https://github.com/grumpycoders/pcsx-redux"
+  verification: "The SCPH-1001 ROM completed the approved logo checkpoint on the AE350 after 99,999,544 interpreted instructions, 158,497 DMA words, and 199 modeled VBlanks, with zero unknown I/O accesses in the host regression and matching terminal hardware telemetry in core-log entry 24. Peripheral accuracy beyond that command path has not been compared with original hardware, so the record remains INFERRED."
 
 - record_id: TOOL-006
   kind: TOOLCHAIN

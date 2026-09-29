@@ -21,6 +21,8 @@ static int address_ptr(struct psx_cpu *cpu, uint32_t address, uint32_t bytes,
 static int read8(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 {
 	uint8_t *p;
+	if (cpu->bus_read)
+		return cpu->bus_read(cpu->bus_opaque, address, 1, value);
 	if (address_ptr(cpu, address, 1, &p))
 		return -1;
 	*value = p[0];
@@ -30,6 +32,8 @@ static int read8(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 static int read16(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 {
 	uint8_t *p;
+	if (cpu->bus_read)
+		return cpu->bus_read(cpu->bus_opaque, address, 2, value);
 	if (address_ptr(cpu, address, 2, &p))
 		return -1;
 	*value = p[0] | ((uint32_t)p[1] << 8);
@@ -39,6 +43,8 @@ static int read16(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 static int read32(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 {
 	uint8_t *p;
+	if (cpu->bus_read)
+		return cpu->bus_read(cpu->bus_opaque, address, 4, value);
 	if (address_ptr(cpu, address, 4, &p))
 		return -1;
 	*value = p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
@@ -49,6 +55,8 @@ static int read32(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 static int write8(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 {
 	uint8_t *p;
+	if (cpu->bus_write)
+		return cpu->bus_write(cpu->bus_opaque, address, 1, value);
 	if (address_ptr(cpu, address, 1, &p))
 		return -1;
 	p[0] = (uint8_t)value;
@@ -58,6 +66,8 @@ static int write8(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 static int write16(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 {
 	uint8_t *p;
+	if (cpu->bus_write)
+		return cpu->bus_write(cpu->bus_opaque, address, 2, value);
 	if (address_ptr(cpu, address, 2, &p))
 		return -1;
 	p[0] = (uint8_t)value;
@@ -68,6 +78,8 @@ static int write16(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 static int write32(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 {
 	uint8_t *p;
+	if (cpu->bus_write)
+		return cpu->bus_write(cpu->bus_opaque, address, 4, value);
 	if (address_ptr(cpu, address, 4, &p))
 		return -1;
 	p[0] = (uint8_t)value;
@@ -99,7 +111,8 @@ static int exception(struct psx_cpu *cpu, enum psx_exception code,
 	uint32_t current_pc, int in_delay_slot, uint32_t bad_address,
 	int set_bad_address, uint32_t coprocessor)
 {
-	uint32_t cause = ((uint32_t)code << 2) | (coprocessor << 28);
+	uint32_t cause = (cpu->cp0[13] & 0x0000ff00u) |
+		((uint32_t)code << 2) | (coprocessor << 28);
 	uint32_t status = cpu->cp0[12];
 
 	if (in_delay_slot) {
@@ -346,6 +359,9 @@ void psx_cpu_reset(struct psx_cpu *cpu, uint8_t *ram, uint32_t ram_size,
 	cpu->next_pc = pc + 4u;
 	cpu->ram = ram;
 	cpu->ram_size = ram_size;
+	cpu->bus_read = 0;
+	cpu->bus_write = 0;
+	cpu->bus_opaque = 0;
 	cpu->cycles = 0;
 	cpu->exception_count = 0;
 	cpu->branch_pc = 0;
@@ -355,6 +371,15 @@ void psx_cpu_reset(struct psx_cpu *cpu, uint8_t *ram, uint32_t ram_size,
 	cpu->in_delay_slot = 0;
 	cpu->next_delay_slot = 0;
 	psx_gte_reset(&cpu->gte);
+}
+
+void psx_cpu_reset_bus(struct psx_cpu *cpu, psx_bus_read_fn read_fn,
+	psx_bus_write_fn write_fn, void *opaque, uint32_t pc)
+{
+	psx_cpu_reset(cpu, 0, 0, pc);
+	cpu->bus_read = read_fn;
+	cpu->bus_write = write_fn;
+	cpu->bus_opaque = opaque;
 }
 
 int psx_cpu_step(struct psx_cpu *cpu)
@@ -376,6 +401,12 @@ int psx_cpu_step(struct psx_cpu *cpu)
 
 	cpu->load_pending = 0;
 	cpu->in_delay_slot = 0;
+	if ((cpu->cp0[12] & 1u) &&
+	    (cpu->cp0[12] & cpu->cp0[13] & 0x0000ff00u)) {
+		result = exception(cpu, PSX_EXC_INTERRUPT, current_pc, in_delay,
+			0, 0, 0);
+		goto finish;
+	}
 	if (current_pc & 3u) {
 		result = exception(cpu, PSX_EXC_ADEL, current_pc, in_delay,
 			current_pc, 1, 0);

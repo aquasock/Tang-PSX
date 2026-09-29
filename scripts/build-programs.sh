@@ -35,6 +35,21 @@ for name in "${programs[@]}"; do
     fi
     if [[ "$name" == psx_diag ]]; then
         python3 "$PROJECT_ROOT/tools/gen_psx_vectors.py" -o "$out/psx_vectors.h"
+        extra_sources=("$PROJECT_ROOT/software/psx/r3000.c"
+            "$PROJECT_ROOT/software/psx/gte.c")
+    fi
+    if [[ "$name" == psx_bios ]]; then
+        bios=${PSX_BIOS:-"$PROJECT_ROOT/../scph1001.bin"}
+        if [[ ! -f "$bios" ]] || [[ $(stat -c %s "$bios") -ne 524288 ]]; then
+            echo "PSX_BIOS must name a 524288-byte SCPH-1001 image" >&2
+            exit 1
+        fi
+        bios_sha256=$(sha256sum "$bios" | awk '{print $1}')
+        if [[ "$bios_sha256" != 71af94d1e47a68c11e8fdb9f8368040601514a42a5a399cda48c7d3bff1e99d3 ]]; then
+            echo "PSX_BIOS is not the verified SCPH-1001 image" >&2
+            exit 1
+        fi
+        cp "$bios" "$out/scph1001.bin"
         extra_sources=("$PROJECT_ROOT"/software/psx/*.c)
     fi
     "$CC" "${CFLAGS[@]}" -I"$PROJECT_ROOT/software/psx" -I"$out" \

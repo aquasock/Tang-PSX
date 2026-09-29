@@ -28,6 +28,11 @@ struct psx_gte {
 	uint32_t control[32];
 };
 
+typedef int (*psx_bus_read_fn)(void *opaque, uint32_t address,
+	uint32_t bytes, uint32_t *value);
+typedef int (*psx_bus_write_fn)(void *opaque, uint32_t address,
+	uint32_t bytes, uint32_t value);
+
 struct psx_cpu {
 	uint32_t gpr[32];
 	uint32_t hi;
@@ -38,6 +43,9 @@ struct psx_cpu {
 	struct psx_gte gte;
 	uint8_t *ram;
 	uint32_t ram_size;
+	psx_bus_read_fn bus_read;
+	psx_bus_write_fn bus_write;
+	void *bus_opaque;
 	uint32_t cycles;
 	uint32_t exception_count;
 	uint32_t branch_pc;
@@ -57,6 +65,8 @@ int psx_gte_command(struct psx_gte *gte, uint32_t instruction);
 
 void psx_cpu_reset(struct psx_cpu *cpu, uint8_t *ram, uint32_t ram_size,
 	uint32_t pc);
+void psx_cpu_reset_bus(struct psx_cpu *cpu, psx_bus_read_fn read_fn,
+	psx_bus_write_fn write_fn, void *opaque, uint32_t pc);
 int psx_cpu_step(struct psx_cpu *cpu);
 int psx_cpu_run(struct psx_cpu *cpu, uint32_t instruction_limit);
 

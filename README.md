@@ -136,6 +136,38 @@ card. The generated vector set itself has CRC-32 `0xc2527637`. A
 failure instead draws a red `GTE FAIL` card and puts the vector/check selector,
 expected value, and observed value in the standard failure registers.
 
+## SCPH-1001 BIOS logo checkpoint
+
+`psx_bios.tpx` runs the North American SCPH-1001 ROM through the portable
+R3000A machine on the 750 MHz AE350. The machine supplies 2 MiB mirrored main
+RAM, scratchpad and BIOS mappings, interrupt/VBlank state, GPU and ordering-table
+DMA, essential timer/CD-ROM/SPU register behavior, and a software GPU backed by
+1024x512 BGR555 VRAM. GP0 drawing and transfer commands render the real BIOS
+startup command stream, which is resampled into Gate 1's 640x480 RGB565 HDMI
+framebuffer while execution continues.
+
+The copyrighted BIOS is never stored in this repository. By default the build
+expects the verified 512 KiB `scph1001.bin` beside the repository, or accepts
+an explicit path through `PSX_BIOS`. Its required SHA-256 is
+`71af94d1e47a68c11e8fdb9f8368040601514a42a5a399cda48c7d3bff1e99d3`.
+
+```sh
+PSX_BIOS=/path/to/scph1001.bin scripts/build-programs.sh psx_bios
+PSX_BIOS=/path/to/scph1001.bin python3 tests/test_psx_bios.py
+python3 tools/ae350_run.py upload build/programs/psx_bios/psx_bios.tpx
+# Load Gate 1 before running this command.
+python3 tools/ae350_run.py run psx_bios.tpx --timeout 900
+```
+
+The run progresses from black through a brightening gray background, animates
+the orange/red diamond, and finishes with the blue `SONY`, `TM`, and
+`COMPUTER ENTERTAINMENT` text. Success returns `0xb1051001` at stage
+`0x80011001`. The deterministic checkpoint executes 99,999,544 guest
+instructions, consumes 10,768 GPU words and 158,497 DMA words, draws 414
+primitives, and performs 63 image uploads. This proves the startup-logo path;
+CD media, controllers, memory cards, audio synthesis, and continued execution
+into the BIOS menu or a game remain future work.
+
 ## HDMI framebuffer output
 
 Gate 1 scans a contiguous 640x480 RGB565 framebuffer from `0x7ff00000` in
@@ -152,8 +184,8 @@ updates so the continuously looping DMA sees the new pixels.
 
 The system PLL supplies a 125 MHz HDMI serializer clock, divided by five for a
 25 MHz pixel clock. Standard 640x480 blanking produces a 59.52 Hz refresh rate.
-This contiguous RGB565 surface proves software-drawn DDR3 video but is not yet
-the PlayStation GPU's 1024x512 15-bit VRAM layout.
+The BIOS program converts the active display region from its separate
+1024x512 BGR555 PlayStation VRAM into this scanout surface.
 
 ## Build
 

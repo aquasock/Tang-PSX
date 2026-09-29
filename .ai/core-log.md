@@ -763,3 +763,44 @@ Gate 1 is complete at its approved interpreter-and-GTE diagnostic boundary; reev
 - User Test: PASS
 
 ---
+
+## 24 COMMIT Unreleased 2026-09-28T17:51:09-07:00
+
+#### Coming From:
+
+Unreleased 98a0ba9
+
+#### Purpose:
+
+Implement the approved PlayStation BIOS memory map, DMA and software-GPU path, then prove the authentic SCPH-1001 startup logo through the existing Gate 1 loader and HDMI framebuffer.
+
+#### Outcome:
+
+The portable R3000A now supports callback-based buses and hardware interrupt entry while preserving the 96/96 CPU/GTE regression. `software/psx/machine.c` supplies mirrored 2 MiB RAM, scratchpad and BIOS mappings, cache-isolation behavior, IRQ/VBlank state, startup timer/CD-ROM/SPU registers, GPU linked-list/block DMA, and ordering-table DMA; `software/psx/gpu.c` supplies 1024x512 BGR555 VRAM, GP0/GP1 parsing, transfers, drawing state, fills, polygons, lines, rectangles, texture sampling, and HDMI conversion. The external 524,288-byte SCPH-1001 image was accepted only at SHA-256 `71af94d1e47a68c11e8fdb9f8368040601514a42a5a399cda48c7d3bff1e99d3` and was not committed. The sanitizer-backed host regression executed 99,999,544 guest instructions with 10,768 GPU words, 414 primitives, 63 uploads, 158,497 DMA words, zero unknown GPU commands or I/O accesses, and deterministic framebuffer SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7`. The 546,792-byte TPX had SHA-256 `40d293e2fdb0dff9e73118c5f515d39d1e80a5b11d7b8776717bd8dd2dfcb2e1`; Tang-Control uploaded it at 330.2 KiB/s and verified SD CRC-32 `0x30bd0a49`. On the unchanged hardware-proven Gate 1 image, the BIOS progressed through black, brightening gray, the animated orange/red diamond, and the complete blue `SONY` / `TM` / `COMPUTER ENTERTAINMENT` screen, returning `0xb1051001` at stage `0x80011001` with telemetry exactly matching the host run, failure zero, and no stream overflow or HDMI underflow; the user reported that everything booted perfectly. `.ai/core-reference.md` gained PSXGPU-001 and PSXIO-001 from PSX-SPX and PCSX-Redux; both remain INFERRED because timing and behavior beyond this real-BIOS startup path were not compared with original PlayStation hardware. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry and the reference additions, confirmed 24 sequential entries and exactly six required sections, inspected the complete `.ai` diff, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate the next milestone with the user; the recommended path is to continue beyond the logo into the BIOS menu by completing CD-ROM, controller, memory-card, audio, GPU-command, and peripheral timing behavior, while keeping the current deterministic logo checkpoint as a regression.
+
+#### Files Modified:
+
+- README.md
+- scripts/build-programs.sh
+- software/programs/psx_bios/bios.S
+- software/programs/psx_bios/main.c
+- software/psx/gpu.c
+- software/psx/gpu.h
+- software/psx/machine.c
+- software/psx/machine.h
+- software/psx/psx.h
+- software/psx/r3000.c
+- tests/psx_bios_host.c
+- tests/test_psx_bios.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
