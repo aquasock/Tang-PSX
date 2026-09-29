@@ -1086,3 +1086,33 @@ With the user's go-ahead, start step 2 of the approved Lightrec plan. Build Ligh
 - User Test: N/A
 
 ---
+
+## 32 COMMIT Unreleased 2026-09-29T10:28:28-07:00
+
+#### Coming From:
+
+Unreleased 53fbdc8
+
+#### Purpose:
+
+Shorten the GNU Lightning RV32 patch test loop by building in parallel, finding the slow part of the RV64 run, and running all targets concurrently, in the three user-approved steps.
+
+#### Outcome:
+
+Before this cycle, `tests/test_lightning_rv32.py` recompiled the Lightning library for every C check program. A full run took 51 s on each RV32 target and 139 s on RV64, and the quick 67-test check took 6.7 s. The harness now compiles the library, shim, and check driver once per target as concurrent compiler jobs, and it compiles and links the 11 C programs against those objects concurrently. That cut a full RV32 run to 14 s and RV64 to 93 s. The new `--timings N` option reports the N slowest tests. No test took more than 2.6 s on either word size, and the RV64 build phases showed that the generated 80,058-line `cbit.c` alone took 85.6 s to compile at `-O2` (50.1 s without debug information, 40.5 s at `-O1`, and 4.4 s at `-O0`). As the user approved, only `cbit.c` is now compiled at `-O0`; it is test-side code, the Lightning library under test stays at `-O2`, and `cbit` passed at `-O0` on both RV64 and RV32. The new `--target all` option runs the three targets concurrently in separate work directories and prints each report whole, and `--measure-sizes` now requires a single target. This cycle also fixed a defect in the entry 31 harness: `--measure-sizes` read Lightning's code names after the temporary source tree had been deleted. With `--target all`, all three targets finished in 22.6 s with exit status 0. Results were unchanged at 145 of 145 checks on RV64 and RV32 `ilp32d`, and 142 of 145 on RV32 `ilp32` with the same three expected failures. Run alone, RV64 took 20.9 s, each RV32 target 7.8 s, and the quick check 5.2 s. The RV32 size table measured in `GET_JIT_SIZE` mode is byte-identical to the one in `third_party/patches/gnu-lightning-rv32.patch`. No hardware build or deployment was part of this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 32 with exactly six required sections, confirmed that 32 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+With the user's go-ahead, start step 2 of the approved Lightrec plan as recorded in entry 31. Validate Lightning patch changes with `tests/test_lightning_rv32.py --target all`.
+
+#### Files Modified:
+
+- tests/test_lightning_rv32.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

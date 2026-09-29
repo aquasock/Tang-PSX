@@ -13,6 +13,10 @@ driver would pass plus the __riscv macros a native RISC-V preprocessor
 predefines, and tests/lightning_shim supplies popen (stdin), dlsym (a
 fixed table of the C functions the tests call), and mmap/munmap/mprotect as
 Linux system calls serviced by qemu user mode.
+
+Typical use, from the repository root with scripts/env.sh sourced:
+  tests/test_lightning_rv32.py --target all          all three targets, ~15 s
+  tests/test_lightning_rv32.py --no-nodata --no-c-tests   quick RV32 check
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -66,7 +71,22 @@ def code_names() -> list[str]:
     return re.findall(r'"([^"]*)"', body)
 
 
-def build_c_tests(target: str, work: Path) -> list[Path]:
+def compile_all(jobs: list[list[str]]) -> None:
+    """Run independent compiler invocations concurrently."""
+    with ThreadPoolExecutor() as pool:
+        for result in pool.map(lambda command: subprocess.run(command), jobs):
+            if result.returncode:
+                raise subprocess.CalledProcessError(result.returncode,
+                                                    result.args)
+
+
+def timed(function, *arguments):
+    start = time.monotonic()
+    result = function(*arguments)
+    return result, time.monotonic() - start
+
+
+def build_c_tests(target: str, work: Path, library: list[Path]) -> list[Path]:
     march, mabi, _, _ = TARGETS[target]
     compiler = shutil.which("riscv64-unknown-elf-gcc")
     subprocess.run(["gcc", "-O2", str(LIGHTNING / "check/gen_cbit.c"),
@@ -86,15 +106,17 @@ def build_c_tests(target: str, work: Path) -> list[Path]:
     flags = [f"-march={march}", f"-mabi={mabi}", "-O2", "-g", "-D_GNU_SOURCE",
              "-DHAVE_MMAP=1", f"-I{work / 'include'}",
              f"-I{LIGHTNING / 'include'}", f"-I{SHIM}", "-w", "-fwrapv"]
-    library = [str(LIGHTNING / "lib" / name) for name in LIBRARY_SOURCES]
-    programs = []
-    for name in C_TESTS:
-        source = cbit if name == "cbit" else LIGHTNING / "check" / f"{name}.c"
-        program = work / f"c_{name}"
-        subprocess.run([compiler, *flags, str(source), *library,
-                        str(SHIM / "shim.c"), "-lm", "-o", str(program)],
-                       check=True)
-        programs.append(program)
+    # Each program is compiled and linked against the library objects that
+    # build() already produced, all programs at once.  The generated cbit.c
+    # (80,000 lines for 64-bit words) takes 86 s at -O2 and 4 s at -O0; it is
+    # test-side code, and the Lightning library under test stays at -O2.
+    programs = [work / f"c_{name}" for name in C_TESTS]
+    compile_all([
+        [compiler, *([f if f != "-O2" else "-O0" for f in flags]
+                     if name == "cbit" else flags),
+         str(cbit if name == "cbit" else LIGHTNING / "check" / f"{name}.c"),
+         *map(str, library), "-lm", "-o", str(program)]
+        for name, program in zip(C_TESTS, programs)])
     return programs
 
 
@@ -111,7 +133,9 @@ def run_c_test(target: str, program: Path) -> tuple[str, bool, str, str]:
     return program.name, ok, detail, ""
 
 
-def build(target: str, work: Path, measure: bool = False) -> Path:
+def build(target: str, work: Path,
+          measure: bool = False) -> tuple[Path, list[Path]]:
+    """Build the check driver; return it and the library objects it uses."""
     march, mabi, _, _ = TARGETS[target]
     compiler = shutil.which("riscv64-unknown-elf-gcc")
     if not compiler:
@@ -125,24 +149,28 @@ def build(target: str, work: Path, measure: bool = False) -> Path:
              "-DHAVE_MMAP=1",
              f"-I{include}", f"-I{LIGHTNING / 'include'}", f"-I{SHIM}",
              "-w"]
-    sources = [LIGHTNING / "lib" / name for name in LIBRARY_SOURCES]
-    sources += [LIGHTNING / "check/lightning.c", SHIM / "shim.c"]
-    objects = []
+    size_flags = []
     if measure:
         # Lightning's size-measurement mode appends "code size" lines to a
         # file; under qemu user mode they are sent to stderr instead.
         flags += ["-DGET_JIT_SIZE=1", '-DJIT_SIZE_PATH="stderr"']
-        sources.remove(LIGHTNING / "lib/jit_size.c")
-        size_object = work / "jit_size.o"
-        subprocess.run([compiler, *flags, "-Dfopen=shim_size_fopen",
-                        "-Dfclose=fflush", "-c",
-                        str(LIGHTNING / "lib/jit_size.c"),
-                        "-o", str(size_object)], check=True)
-        objects.append(str(size_object))
+        size_flags = ["-Dfopen=shim_size_fopen", "-Dfclose=fflush"]
+    objects = work / "objects"
+    objects.mkdir()
+    sources = [LIGHTNING / "lib" / name for name in LIBRARY_SOURCES]
+    sources += [SHIM / "shim.c", LIGHTNING / "check/lightning.c"]
+    # lib/lightning.c and check/lightning.c share a stem.
+    outputs = [objects / f"{source.parent.name}_{source.stem}.o"
+               for source in sources]
+    compile_all([
+        [compiler, *flags, *(size_flags if source.name == "jit_size.c" else []),
+         "-c", str(source), "-o", str(output)]
+        for source, output in zip(sources, outputs)])
+    library, driver_object = outputs[:-1], outputs[-1]
     driver = work / "lightning"
-    subprocess.run([compiler, *flags, *map(str, sources), *objects, "-lm",
-                    "-o", str(driver)], check=True)
-    return driver
+    subprocess.run([compiler, *flags, str(driver_object), *map(str, library),
+                    "-lm", "-o", str(driver)], check=True)
+    return driver, library
 
 
 def run_test(target: str, driver: Path, name: str, nodata: bool,
@@ -177,11 +205,71 @@ def run_test(target: str, driver: Path, name: str, nodata: bool,
     return label, True, "", result.stderr
 
 
+def run_target(target: str, args: argparse.Namespace, names: list[str],
+               code_name: list[str], work: Path) -> tuple[list[str], bool]:
+    """Build and run one target; return its report lines and success."""
+    work.mkdir()
+    report = []
+    driver, library = build(target, work, bool(args.measure_sizes))
+    jobs = [(name, False) for name in names]
+    if not args.no_nodata:
+        jobs += [(name, True) for name in names]
+    programs = []
+    if not (args.no_c_tests or args.tests or args.measure_sizes):
+        programs = build_c_tests(target, work, library)
+    with ThreadPoolExecutor() as pool:
+        timed_results = list(pool.map(
+            lambda job: timed(run_test, target, driver, *job, work), jobs))
+        timed_results += list(pool.map(
+            lambda program: timed(run_c_test, target, program), programs))
+    results = [result for result, _ in timed_results]
+    if args.timings:
+        slowest = sorted(timed_results, key=lambda item: -item[1])
+        report.append(f"{target}: slowest of {len(slowest)} tests "
+                      "(wall seconds, run concurrently):")
+        for (label, *_), seconds in slowest[:args.timings]:
+            report.append(f"  {seconds:7.2f}  {label}")
+    expected = EXPECTED_FAILURES.get(target, set())
+    failures = [(label, detail) for label, ok, detail, _ in results
+                if not ok and label not in expected]
+    for label, detail in failures:
+        report.append(f"FAIL {target} {label}\n{detail}\n")
+    for label, ok, _, _ in results:
+        if label in expected:
+            report.append(f"{'UNEXPECTED PASS' if ok else 'expected failure'} "
+                          f"{target} {label}")
+            if ok:
+                failures.append((label, "unexpected pass"))
+    if args.measure_sizes:
+        sizes = [0] * len(code_name)
+        for *_, stderr in results:
+            for code, size in re.findall(r"^(\d+) (\d+)$", stderr, re.M):
+                sizes[int(code)] = max(sizes[int(code)], int(size))
+        wordsize = TARGETS[target][3]
+        lines = [f"#if __WORDSIZE == {wordsize}",
+                 f"#define JIT_INSTR_MAX {max(sizes)}"]
+        lines += [f"    {size},\t/* {name} */"
+                  for size, name in zip(sizes, code_name)]
+        lines.append("#endif /* __WORDSIZE */")
+        args.measure_sizes.write_text("\n".join(lines) + "\n")
+        report.append(f"wrote {len(code_name)} instruction sizes to "
+                      f"{args.measure_sizes}")
+    passed = sum(ok for _, ok, _, _ in results)
+    report.append(f"GNU Lightning {target}: {passed}/{len(results)} check "
+                  f"tests passed ({len(programs)} C programs, "
+                  f"{sum(label in expected for label, *_ in results)} "
+                  "expected failures)")
+    return report, not failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", choices=TARGETS, default="rv32d")
+    parser.add_argument("--target", choices=[*TARGETS, "all"], default="rv32d",
+                        help="target to test, or all three concurrently")
     parser.add_argument("--no-nodata", action="store_true",
                         help="skip the -d (no data buffer) variants")
+    parser.add_argument("--timings", type=int, default=0, metavar="N",
+                        help="print the N slowest tests")
     parser.add_argument("--no-c-tests", action="store_true",
                         help="skip the check/*.c programs")
     parser.add_argument("--measure-sizes", type=Path, metavar="FILE",
@@ -190,53 +278,23 @@ def main() -> int:
     parser.add_argument("tests", nargs="*",
                         help="check/*.tst names (default: all base tests)")
     args = parser.parse_args()
+    targets = list(TARGETS) if args.target == "all" else [args.target]
+    if args.measure_sizes and len(targets) != 1:
+        parser.error("--measure-sizes needs a single --target")
 
     global LIGHTNING
     names = args.tests or base_tests()
     with tempfile.TemporaryDirectory(prefix="tang-psx-lightning-") as temporary:
         work = Path(temporary)
         LIGHTNING = lightning_source.prepare(work / "gnu-lightning")
-        driver = build(args.target, work, bool(args.measure_sizes))
-        jobs = [(name, False) for name in names]
-        if not args.no_nodata:
-            jobs += [(name, True) for name in names]
-        programs = []
-        if not (args.no_c_tests or args.tests or args.measure_sizes):
-            programs = build_c_tests(args.target, work)
-        with ThreadPoolExecutor() as pool:
-            results = list(pool.map(
-                lambda job: run_test(args.target, driver, *job, work), jobs))
-            results += list(pool.map(
-                lambda program: run_c_test(args.target, program), programs))
-    expected = EXPECTED_FAILURES.get(args.target, set())
-    failures = [(label, detail) for label, ok, detail, _ in results
-                if not ok and label not in expected]
-    for label, detail in failures:
-        print(f"FAIL {label}\n{detail}\n")
-    for label, ok, _, _ in results:
-        if label in expected:
-            print(f"{'UNEXPECTED PASS' if ok else 'expected failure'} {label}")
-            if ok:
-                failures.append((label, "unexpected pass"))
-    if args.measure_sizes:
-        names = code_names()
-        sizes = [0] * len(names)
-        for *_, stderr in results:
-            for code, size in re.findall(r"^(\d+) (\d+)$", stderr, re.M):
-                sizes[int(code)] = max(sizes[int(code)], int(size))
-        wordsize = TARGETS[args.target][3]
-        lines = [f"#if __WORDSIZE == {wordsize}",
-                 f"#define JIT_INSTR_MAX {max(sizes)}"]
-        lines += [f"    {size},\t/* {name} */"
-                  for size, name in zip(sizes, names)]
-        lines.append("#endif /* __WORDSIZE */")
-        args.measure_sizes.write_text("\n".join(lines) + "\n")
-        print(f"wrote {len(names)} instruction sizes to {args.measure_sizes}")
-    passed = sum(ok for _, ok, _, _ in results)
-    print(f"GNU Lightning {args.target}: {passed}/{len(results)} check tests "
-          f"passed ({len(programs)} C programs, "
-          f"{sum(label in expected for label, *_ in results)} expected failures)")
-    return 1 if failures else 0
+        code_name = code_names()
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            outcomes = list(pool.map(
+                lambda target: run_target(target, args, names, code_name,
+                                          work / target), targets))
+    for report, _ in outcomes:
+        print("\n".join(report))
+    return 0 if all(ok for _, ok in outcomes) else 1
 
 
 if __name__ == "__main__":
