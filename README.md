@@ -1,5 +1,10 @@
 # Tang-PSX
 
+<img width="1312" height="602" alt="tang-psx-bios-progress2" src="https://github.com/user-attachments/assets/dc74ee7b-dcc3-421a-aa08-dea1c7bbf11c" />
+
+<img width="640" height="480" alt="spyro_expected_35s" src="https://github.com/user-attachments/assets/9c0b98ae-314c-4456-990b-ac1d37191b18" />
+
+
 Tang-PSX is an experimental PlayStation core for the Sipeed Tang Console
 138K. It combines the GW5AST AE350 hard RV32 processor with FPGA peripherals
 and uses the Tang-Control BL616 firmware and transport.
