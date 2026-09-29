@@ -1,20 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
-// Run SCPH-1001 to the logo checkpoint with Lightrec as the CPU core under
-// qemu-riscv32, using the hardware psx_bios program's event-driven service
+// Run SCPH-1001 to the logo checkpoint under qemu-riscv32 with a selectable
+// R3000A core, using the hardware psx_bios program's event-driven service
 // loop (VBlank when the BIOS is seen waiting for it). Bare metal: no libc
-// startup, newlib-nano over software/lightrec/runtime.c. Statistics go to
-// stderr and the 640x480 display to stdout as a binary PPM. START_CYCLES
-// starts the guest clock elsewhere, to cross bit 31 or the 32-bit wrap; the
-// statistics count from it.
+// startup, newlib-nano over software/lightrec/runtime.c for every core.
+//
+//   PSX_BIOS_LIGHTREC        software/lightrec (link liblightrec.a)
+//   otherwise                psx_machine_run: the RV32 JIT, or with
+//                            PSX_JIT_INTERPRET_ONLY the interpreter alone
+//
+// PSX_DISABLE_ACCEL turns off the machine's signature-checked loop
+// accelerators, which Lightrec does not use. Statistics go to stderr and the
+// 640x480 display to stdout as a binary PPM. START_CYCLES starts the guest
+// clock elsewhere, to cross bit 31 or the 32-bit wrap; the statistics count
+// from it.
 
 #include <stdint.h>
 #include <stdio.h>
 
 #include "machine.h"
+#include "runtime.h"
+#ifdef PSX_BIOS_LIGHTREC
 #include "memmanager.h"
 #include "psx_lightrec.h"
-#include "runtime.h"
+#endif
 
 #define SERVICE_INSTRUCTIONS 256u
 #define MAX_GUEST_CYCLES 400000000u
@@ -28,7 +37,9 @@ extern const uint8_t psx_bios_image_end[];
 
 static uint8_t psx_ram[PSX_MAIN_RAM_BYTES] __attribute__((aligned(4096)));
 static uint16_t psx_vram[PSX_VRAM_PIXELS];
+#ifdef PSX_BIOS_LIGHTREC
 static uint8_t code_buffer[CODE_BUFFER_BYTES] __attribute__((aligned(4096)));
+#endif
 static uint16_t display[640u * 480u];
 static uint8_t ppm_row[640u * 3u];
 static struct psx_machine machine;
@@ -89,9 +100,57 @@ static void write_display(void)
 	}
 }
 
+#ifdef PSX_BIOS_LIGHTREC
+static void print_core_stats(uint32_t flags)
+{
+	const struct psx_lightrec_stats *stats = psx_lightrec_stats();
+	fprintf(stderr, "lightrec_runs=%lu interrupts=%lu syscalls=%lu "
+		"breaks=%lu gte=%lu io_reads=%lu "
+		"io_writes=%lu\n",
+		(unsigned long)stats->runs, (unsigned long)stats->interrupts,
+		(unsigned long)stats->syscalls, (unsigned long)stats->breaks,
+		(unsigned long)stats->gte_commands,
+		(unsigned long)stats->io_reads, (unsigned long)stats->io_writes);
+	fprintf(stderr, "code_emissions=%lu code_bytes=%u ir_bytes=%u "
+		"dma_invalidations=%lu cache_isolations=%lu heap_bytes=%lu "
+		"exit_flags=0x%lx unknown_reads=%lu unknown_writes=%lu\n",
+		(unsigned long)stats->code_emissions,
+		lightrec_get_mem_usage(MEM_FOR_CODE),
+		lightrec_get_mem_usage(MEM_FOR_IR),
+		(unsigned long)stats->dma_invalidations,
+		(unsigned long)stats->cache_isolations,
+		(unsigned long)tpx_runtime_heap_used(), (unsigned long)flags,
+		(unsigned long)machine.unknown_reads,
+		(unsigned long)machine.unknown_writes);
+}
+#else
+static void print_core_stats(uint32_t flags)
+{
+	const struct psx_jit *jit = &machine.jit;
+	fprintf(stderr, "jit_compiled=%lu jit_compiled_words=%lu "
+		"jit_rejected=%lu jit_flushes=%lu jit_evictions=%lu "
+		"jit_invalidations=%lu\n",
+		(unsigned long)jit->compiled_blocks,
+		(unsigned long)jit->compiled_words,
+		(unsigned long)jit->rejected_blocks,
+		(unsigned long)jit->cache_flushes,
+		(unsigned long)jit->evictions,
+		(unsigned long)jit->invalidations);
+	fprintf(stderr, "jit_blocks=%lu jit_instructions=%lu "
+		"jit_early_exits=%lu jit_fallback=%lu heap_bytes=%lu "
+		"exit_flags=0x%lx unknown_reads=%lu unknown_writes=%lu\n",
+		(unsigned long)jit->executed_blocks,
+		(unsigned long)jit->executed_instructions,
+		(unsigned long)jit->early_exits,
+		(unsigned long)jit->interpreter_instructions,
+		(unsigned long)tpx_runtime_heap_used(), (unsigned long)flags,
+		(unsigned long)machine.unknown_reads,
+		(unsigned long)machine.unknown_writes);
+}
+#endif
+
 int main(void)
 {
-	const struct psx_lightrec_stats *stats;
 	uint32_t calls = 0;
 	uint32_t flags = 0;
 
@@ -99,20 +158,26 @@ int main(void)
 		return 2;
 	psx_machine_reset(&machine, psx_ram, psx_vram, psx_bios_image);
 	machine.cpu.cycles = START_CYCLES;
+#ifdef PSX_BIOS_LIGHTREC
 	if (psx_lightrec_init(&machine, code_buffer, sizeof(code_buffer))) {
 		fprintf(stderr, "psx_lightrec_init failed\n");
 		return 3;
 	}
+#endif
 	while (!logo_complete() &&
 	       machine.cpu.cycles - START_CYCLES < MAX_GUEST_CYCLES) {
 		if (psx_machine_waiting_for_vblank(&machine))
 			psx_machine_vblank(&machine);
+#ifdef PSX_BIOS_LIGHTREC
 		else if ((flags = psx_lightrec_run(&machine,
 			  SERVICE_INSTRUCTIONS)))
 			break;
+#else
+		else
+			psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
+#endif
 		++calls;
 	}
-	stats = psx_lightrec_stats();
 	fprintf(stderr, "calls=%lu instructions=%lu vblank=%lu gpu_words=%lu "
 		"primitives=%lu uploads=%lu dma_words=%lu complete=%d\n",
 		(unsigned long)calls,
@@ -122,23 +187,9 @@ int main(void)
 		(unsigned long)machine.gpu.primitives,
 		(unsigned long)machine.gpu.uploads,
 		(unsigned long)machine.dma_words, logo_complete());
-	fprintf(stderr, "lightrec_runs=%lu interrupts=%lu syscalls=%lu "
-		"breaks=%lu gte=%lu io_reads=%lu "
-		"io_writes=%lu\n",
-		(unsigned long)stats->runs, (unsigned long)stats->interrupts,
-		(unsigned long)stats->syscalls, (unsigned long)stats->breaks,
-		(unsigned long)stats->gte_commands,
-		(unsigned long)stats->io_reads, (unsigned long)stats->io_writes);
-	fprintf(stderr, "code_emissions=%lu code_bytes=%u ir_bytes=%u "
-		"dma_invalidations=%lu heap_bytes=%lu exit_flags=0x%lx "
-		"unknown_reads=%lu unknown_writes=%lu\n",
-		(unsigned long)stats->code_emissions,
-		lightrec_get_mem_usage(MEM_FOR_CODE),
-		lightrec_get_mem_usage(MEM_FOR_IR),
-		(unsigned long)stats->dma_invalidations,
-		(unsigned long)tpx_runtime_heap_used(), (unsigned long)flags,
-		(unsigned long)machine.unknown_reads,
-		(unsigned long)machine.unknown_writes);
+	print_core_stats(flags);
+	fprintf(stderr, "accelerated=%lu\n",
+		(unsigned long)machine.accelerated_instructions);
 	write_display();
 	return logo_complete() ? 0 : 1;
 }

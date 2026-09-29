@@ -170,10 +170,12 @@ static void cop2_op(struct lightrec_state *state, u32 op)
 static void enable_ram(struct lightrec_state *state, _Bool enable)
 {
 	(void)state;
-	if (enable)
+	if (enable) {
 		memcpy(lr.machine->ram, lr.isolated_ram, ISOLATED_RAM_BYTES);
-	else
+	} else {
+		++lr.stats.cache_isolations;
 		memcpy(lr.isolated_ram, lr.machine->ram, ISOLATED_RAM_BYTES);
+	}
 }
 
 static void code_inv(void *address, u32 length)

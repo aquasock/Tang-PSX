@@ -1188,3 +1188,43 @@ With the user's go-ahead, start step 3 of the approved Lightrec plan by comparin
 - User Test: N/A
 
 ---
+
+## 35 COMMIT Unreleased 2026-09-29T11:53:48-07:00
+
+#### Coming From:
+
+Unreleased afe0293
+
+#### Purpose:
+
+Compare Lightrec with the current JIT and the interpreter on the SCPH-1001 logo checkpoint under QEMU for correctness, executed-instruction cost, code size, and memory, as step 3 of the approved Lightrec plan.
+
+#### Outcome:
+
+`tests/psx_bios_lightrec_rv32.c` became `tests/psx_bios_cores_rv32.c`, one harness for every core that shares the service loop, newlib-nano, and `software/lightrec/runtime.c`: `PSX_BIOS_LIGHTREC` selects Lightrec, and otherwise `psx_machine_run` runs the JIT, or the interpreter alone with the new `PSX_JIT_INTERPRET_ONLY` switch in `software/psx/jit.c`. The new `PSX_DISABLE_ACCEL` switch in `software/psx/machine.c` turns off the signature-checked BIOS loop accelerators, which Lightrec does not use. Neither switch is set by any hardware program. `tools/qemu_insn_profile.c` is a QEMU TCG plugin that counts executed RV32 instructions, loads, and stores per code address, and `tools/psx_core_compare.py` builds five cores for `rv32imafdc` `ilp32` at `-O2` with named objects and a link map, runs them concurrently to the checkpoint in about 8 s, verifies each result, and attributes the counts to code groups and functions. The Ubuntu `qemu-user` 10.2.1 package has no plugin support, so QEMU 10.2.1 was built locally with `--enable-plugins` against extracted glib development packages; the tool's docstring gives the configuration. Every core reproduced framebuffer SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7`, the interpreter and JIT reproduced the 27,870,497-instruction accelerated checkpoint exactly, and without accelerators both executed an identical 30,133,834 instructions. Lightrec's CPU core (generated code, Lightrec and Lightning, and the glue) costs 14.8 RV32 instructions per guest instruction, against 157 to 160 for the JIT and 166 for the interpreter, because the JIT runs only 12.5 million of 30.1 million unaccelerated guest instructions in compiled code while its block source check and interpreter fallback cost more than compiled code saves. The first run showed Lightrec spending about 900 million instructions in newlib-nano's byte-loop `memset` and `memcpy`, mostly GNU Lightning clearing its node pools and liveness sets on each of 1,208 compiles, 12 whole-table invalidations when the BIOS leaves cache isolation, and the register copies in `psx_lightrec_run`, so `runtime.c` now supplies word-wise versions. With them the checkpoint costs 1,933 million RV32 instructions under Lightrec, against 2,353 million for the accelerated JIT that runs on hardware today, 2,389 million for the accelerated interpreter, and 6,119 million for the JIT without accelerators; 1,263 million of each is the software GPU's `draw_triangle`, which hardware now offloads to the fabric rasterizer. Lightrec's CPU core alone costs 447 million against 943 million for the accelerated JIT. Lightrec's image has 257 KB of host text against 48 KB, uses 2.9 MB of heap, and generated 332 KB of code, while the JIT generated 645 KB over five cache flushes. `software/lightrec/psx_lightrec.c` now counts cache isolations. QEMU models neither the AE350 caches nor DDR3 latency, so these counts are a cost proxy and the hardware effect of Lightrec's larger code and heap is unmeasured. `tests/test_lightrec_rv32.py`, `tests/test_psx_bios_lightrec.py` (unchanged statistics), `test_psx_bios_jit`, `test_psx_jit`, `test_psx_bios`, `test_psx_diag`, `test_psx_cdrom`, `test_psx_gpu`, and `test_psx_gpu_accel` pass, and the `psx_bios` and `psx_disc` hardware programs build. No hardware build or deployment was part of this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 35 with exactly six required sections, confirmed that 35 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+With the user's go-ahead, start step 4 of the approved Lightrec plan by running Lightrec on the AE350 inside a hardware program built with `software/lightrec/runtime.c` and the fabric GPU, first measuring the SCPH-1001 logo checkpoint against the JIT's hardware timing and then Spyro, whose frame rate is bound by CPU emulation. Rerun `tools/psx_core_compare.py` with a plugin-enabled `qemu-riscv32` after changes that affect CPU cost; the one built for this cycle lived in a session scratch directory, so rebuild it as the tool's docstring describes, and if glib headers are not installed, extract `libglib2.0-dev`, `libgio-2.0-dev`, and their `-dev` dependencies with `apt-get download` and `dpkg -x` into a local root and point `PKG_CONFIG_PATH` at it, since installing packages needs sudo. Run both `tests/test_lightrec_rv32.py` and `tests/test_psx_bios_lightrec.py` after any change to the Lightrec integration.
+
+#### Files Modified:
+
+- software/lightrec/psx_lightrec.c
+- software/lightrec/psx_lightrec.h
+- software/lightrec/runtime.c
+- software/lightrec/runtime.h
+- software/psx/jit.c
+- software/psx/machine.c
+- tests/psx_bios_cores_rv32.c
+- tests/psx_bios_lightrec_rv32.c
+- tests/test_psx_bios_lightrec.py
+- tools/psx_core_compare.py
+- tools/qemu_insn_profile.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -740,6 +740,10 @@ static int accelerate_delay_loop(struct psx_machine *machine)
 	uint32_t iterations;
 	uint32_t n;
 
+	/* PSX_DISABLE_ACCEL executes every loop, for comparison with Lightrec. */
+#ifdef PSX_DISABLE_ACCEL
+	return 0;
+#endif
 	if (cpu->load_pending || (cpu->cp0[12] & 1u &&
 	    (cpu->cp0[12] & cpu->cp0[13] & 0x0000ff00u)))
 		return 0;

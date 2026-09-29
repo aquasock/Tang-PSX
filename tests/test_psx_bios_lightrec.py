@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Boot SCPH-1001 to the logo with Lightrec as the CPU under qemu-riscv32.
 
-tests/psx_bios_lightrec_rv32.c runs the hardware service loop (event driven,
+tests/psx_bios_cores_rv32.c runs the hardware service loop (event driven,
 so the guest execution is identical on the AE350) with software/lightrec as
-the R3000A core, linked bare metal against tools/lightrec_build.py's library.
-It runs three times, with the guest clock starting at 0, just below bit 31 and
-just below the 32-bit wrap, which exercises Lightrec's 31-bit cycle window.
+the R3000A core (PSX_BIOS_LIGHTREC), linked bare metal against
+tools/lightrec_build.py's library. It runs three times, with the guest clock
+starting at 0, just below bit 31 and just below the 32-bit wrap, which
+exercises Lightrec's 31-bit cycle window.
 Each run must reproduce the logo checkpoint's telemetry and framebuffer
 exactly, stop with no unexpected Lightrec exit, and match the other runs in
 every Lightrec statistic.
@@ -37,7 +38,7 @@ EXPECTED = (
     "primitives=414 uploads=63 dma_words=158497 complete=1"
 )
 START_CYCLES = (0x00000000, 0x7ff00000, 0xfff00000)
-SOURCES = [ROOT / "tests/psx_bios_lightrec_rv32.c",
+SOURCES = [ROOT / "tests/psx_bios_cores_rv32.c",
            ROOT / "software/lightrec/psx_lightrec.c",
            ROOT / "software/lightrec/runtime.c",
            ROOT / "software/programs/psx_bios/bios.S",
@@ -66,7 +67,7 @@ def main() -> int:
                 compiler, *lightrec_build.ARCH_FLAGS, "-O2", "-g",
                 "-Wall", "-Wextra", "-Werror", "-nostdlib", "-nostartfiles",
                 "-Wl,--no-relax", "-Wl,--gc-sections",
-                f"-DSTART_CYCLES={start:#x}u",
+                "-DPSX_BIOS_LIGHTREC", f"-DSTART_CYCLES={start:#x}u",
                 f"-T{ROOT / 'tests/psx_jit_rv32.ld'}",
                 *lightrec_build.include_flags(library),
                 f"-I{ROOT / 'software/psx'}", f"-Wa,-I{work}",

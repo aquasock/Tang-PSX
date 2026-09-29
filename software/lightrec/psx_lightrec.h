@@ -45,6 +45,7 @@ struct psx_lightrec_stats {
 	uint32_t io_writes;
 	uint32_t code_emissions;
 	uint32_t dma_invalidations;
+	uint32_t cache_isolations;
 	uint32_t exit_flags;
 };
 

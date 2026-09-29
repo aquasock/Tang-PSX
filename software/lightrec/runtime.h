@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
 // Bare-metal C runtime for Lightrec and GNU Lightning, which need malloc and
-// stdio. runtime.c supplies newlib-nano's system calls over a static heap;
-// the program supplies the two platform hooks below (qemu-user system calls
+// stdio. runtime.c supplies newlib-nano's system calls over a static heap,
+// and word-wise memset and memcpy in place of its byte loops; the program
+// supplies the two platform hooks below (qemu-user system calls
 // in the tests, the tpx_api console on the AE350).
 
 #ifndef TPX_LIGHTREC_RUNTIME_H

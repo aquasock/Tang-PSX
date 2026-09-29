@@ -701,6 +701,12 @@ int psx_jit_run(struct psx_jit *jit, struct psx_cpu *cpu,
 		struct psx_jit_block *block =
 			&jit->blocks[(cpu->pc >> 2) & (PSX_JIT_BLOCK_COUNT - 1u)];
 		uint32_t remaining = instruction_limit - executed;
+#ifdef PSX_JIT_INTERPRET_ONLY
+		/* The interpreter alone, for comparison with Lightrec. */
+		executed += interpret(jit, cpu, remaining,
+			&jit->fallback_budget, &result);
+		continue;
+#endif
 		if (cpu->load_pending || cpu->in_delay_slot ||
 		    ((cpu->cp0[12] & 1u) &&
 		    (cpu->cp0[12] & cpu->cp0[13] & 0x0000ff00u))) {
