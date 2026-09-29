@@ -1,0 +1,42 @@
+diff --git a/lib/jit_riscv-cpu.c b/lib/jit_riscv-cpu.c
+--- a/lib/jit_riscv-cpu.c
++++ b/lib/jit_riscv-cpu.c
+@@ -116,1 +116,2 @@
+ #  define simm12_p(im)			((im) <= 2047 && (im) >= -2048)
++#  define simm13_p(im)			((im) <= 4094 && (im) >= -4096)
+@@ -741,5 +742,12 @@ _Btype(jit_state_t *_jit, jit_int32_t op, jit_int32_t fct,
+     assert(!(fct & ~0x07));
+     assert(!(rs1 & ~0x1f));
+     assert(!(rs2 & ~0x1f));
++    if (!simm13_p(imm)) {
++	/* Invert the condition and skip a longer unconditional jump. */
++	assert(!(imm & 1));
++	_Btype(_jit, op, fct ^ 1, rs1, rs2, 8);
++	_Jtype(_jit, 111, _ZERO_REGNO, imm - 4);
++	return;
++    }
+-    assert(!(imm & 1) && simm12_p(imm));
++    assert(!(imm & 1) && simm13_p(imm));
+     i.B.opcode	= op;
+@@ -1493,6 +1493,6 @@ _lti(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+ 	jit_int32_t	t0;
+ 	t0 = jit_get_reg(jit_class_gpr);
+-	movi(r0, i0);
++	movi(rn(t0), i0);
+ 	ltr(r0, r1, rn(t0));
+ 	jit_unget_reg(t0);
+     }
+@@ -1507,6 +1507,6 @@ _lti_u(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+ 	jit_int32_t	t0;
+ 	t0 = jit_get_reg(jit_class_gpr);
+-	movi(r0, i0);
++	movi(rn(t0), i0);
+ 	ltr_u(r0, r1, rn(t0));
+ 	jit_unget_reg(t0);
+     }
+@@ -2439,4 +2440,4 @@ _patch_at(jit_state_t *_jit, jit_word_t instr, jit_word_t label)
+     else if (i.B.opcode == 99) {		/* B{EQ,NE,LT,GE,LTU,GEU} */
+ 	jit_word_t jmp = label - instr;
+-	assert(simm12_p(jmp));
++	assert(!(jmp & 1) && simm13_p(jmp));
+ 	i.B.imm11	= (jmp >> 11) & 0x1;

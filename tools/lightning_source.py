@@ -17,7 +17,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SUBMODULE = ROOT / "third_party/gnu-lightning"
-PATCH = ROOT / "third_party/patches/gnu-lightning-rv32.patch"
+PATCHES = (
+    ROOT / "third_party/patches/gnu-lightning-rv32.patch",
+    ROOT / "third_party/patches/gnu-lightning-rv32-compare.patch",
+)
 
 
 def prepare(destination: Path) -> Path:
@@ -27,8 +30,9 @@ def prepare(destination: Path) -> Path:
                              check=True, capture_output=True).stdout
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(destination, filter="data")
-    subprocess.run(["git", "apply", "--directory=", str(PATCH)],
-                   cwd=destination, check=True)
+    for patch in PATCHES:
+        subprocess.run(["patch", "-p1", "--batch", "--forward", "-i", str(patch)],
+                       cwd=destination, check=True, stdout=subprocess.DEVNULL)
     return destination
 
 

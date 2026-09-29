@@ -221,6 +221,25 @@ The last boots the BIOS to the logo through the real RV32 JIT under
 exactly. Because the service loop is event driven, its JIT statistics are the
 ones the AE350 produces.
 
+An opt-in `psx_bios_lightrec.tpx` runs the same logo checkpoint with Lightrec
+instead of the hybrid JIT, retaining the fabric GPU and the existing JIT image
+for comparison. Build it with the verified BIOS and patched RV32 toolchain:
+
+```sh
+PSX_BIOS=/path/to/scph1001.bin scripts/build-programs.sh psx_bios_lightrec
+PSX_BIOS=/path/to/scph1001.bin python3 tests/test_psx_bios_lightrec.py
+python3 tools/ae350_run.py upload build/programs/psx_bios_lightrec/psx_bios_lightrec.tpx
+# Load Gate 1 before running this command.
+python3 tools/ae350_run.py run psx_bios_lightrec.tpx --timeout 150
+```
+
+The Lightrec image reports the same logo telemetry in the loader registers,
+with CPU and GPU time in the profile registers and compiled block count, code
+bytes, and heap usage in the log. A failed initialization or unexpected
+Lightrec exit publishes a nonzero failure and a distinct `0x8001bad*` stage.
+Its 120 s device-side timeout is separate from the unchanged JIT image's 30 s
+timeout. QEMU instruction counts are not a hardware speed measurement.
+
 ## Booting a disc
 
 `psx_disc.tpx` boots the BIOS with the disc image on the SD card. Put a
@@ -242,6 +261,31 @@ frame. It runs until the core is reset and publishes VBlanks, sectors, requests,
 retries, and cache misses once per second; Tang-Control's `status` lists the
 disc it serves. The runner's `--detach` option returns after the image starts,
 leaving the emulator active.
+
+To compare Lightrec on the same disc and fabric GPU, build a separate
+`psx_disc_lightrec.tpx` image; this does not replace the JIT-based image:
+
+```sh
+PSX_BIOS=/path/to/scph1001.bin scripts/build-programs.sh psx_disc_lightrec
+python3 tools/ae350_run.py upload build/programs/psx_disc_lightrec/psx_disc_lightrec.tpx
+# Load Gate 1 and publish the disc before running this command.
+python3 tools/ae350_run.py run psx_disc_lightrec.tpx --detach --timeout 120
+python3 tools/ae350_run.py status
+```
+
+Its status includes cumulative CPU, GPU, and display milliseconds and VBlank
+count. Initialization or unexpected Lightrec exits publish a nonzero failure
+and a distinct `0x8002bad*` stage. Measure VBlank progress over the same game
+scene when comparing core performance.
+
+The local QEMU regression compares the JIT and Lightrec through the Spyro
+handoff, and can check Lightrec's later menu-range progress (no disc data is
+copied into the repository):
+
+```sh
+PSX_BIOS=/path/to/scph1001.bin PSX_DISC=/path/to/spyro.bin python3 tests/test_psx_disc_lightrec.py
+PSX_BIOS=/path/to/scph1001.bin PSX_DISC=/path/to/spyro.bin PSX_DISC_VBLANKS=2700 python3 tests/test_psx_disc_lightrec.py
+```
 
 The machine adds a CD-ROM controller (`software/psx/cdrom.c`: commands,
 interrupt handshake, 1x/2x sector timing, 2048/2340-byte delivery, DMA channel

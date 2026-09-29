@@ -1228,3 +1228,44 @@ With the user's go-ahead, start step 4 of the approved Lightrec plan by running 
 - User Test: N/A
 
 ---
+
+## 36 COMMIT Unreleased 2026-09-29T12:47:04-07:00
+
+#### Coming From:
+
+Unreleased 75a0d08
+
+#### Purpose:
+
+Integrate Lightrec as separate AE350 BIOS and Spyro disc images, validate the BIOS checkpoint on hardware, and reach Spyro's stable main menu.
+
+#### Outcome:
+
+Added opt-in `psx_bios_lightrec.tpx` and `psx_disc_lightrec.tpx` builds with the existing fabric GPU, preserving the JIT images, and shared loader-backed Lightrec runtime hooks. The pinned GNU Lightning RV32 backend had loaded large comparison immediates into the result register instead of its temporary and restricted conditional branches to a 12-bit range; the exported-source patch fixes both comparisons, accepts full B-type displacements, and emits an inverted branch plus JAL for longer backedges. QEMU's exact BIOS framebuffer remains SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7` at 30,182,705 Lightrec guest instructions; the Lightning and Lightrec suites and the Spyro JIT/Lightrec VBlank 600 and Lightrec VBlank 2700 gates pass. The Lightrec BIOS image reached the correct logo on AE350 in 12.735 s versus the JIT's recorded 6.347 s. The corrected disc image, SD-readback verified at 811,344 bytes and CRC32 `435ea180`, reached Spyro's stable main menu as confirmed by the user, without loader failure or HDMI underflow. On an unchanged menu window from VBlank 2729 to 2989, 260 frames took 21.001 s (12.38 emulated frames per real second); cumulative CPU, GPU, sync, and display profiles rose by 18.004, 12.950, 0.010, and 2.401 s respectively. A previous Lightrec image had stalled at the PlayStation logo; the corrected branch and comparison patch supersedes it.
+
+#### Next Steps:
+
+Profile Lightrec against the JIT on the same stable Spyro scene and investigate the BIOS logo slowdown using matched hardware windows. Keep the separate images and the corrected Lightning patch; the disc runner is persistent until Gate 1 is reset.
+
+#### Files Modified:
+
+- README.md
+- scripts/build-programs.sh
+- software/lightrec/tpx_runtime.c
+- software/lightrec/tpx_runtime.h
+- software/programs/psx_bios/main.c
+- software/programs/psx_disc/main.c
+- tests/lightrec_smoke_rv32.c
+- tests/psx_disc_cores_rv32.c
+- tests/test_psx_bios_lightrec.py
+- tests/test_psx_disc_lightrec.py
+- third_party/patches/gnu-lightning-rv32-compare.patch
+- tools/lightning_source.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

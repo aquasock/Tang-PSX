@@ -246,6 +246,35 @@ static uint32_t lightning_emit_and_call(size_t length)
 	return result;
 }
 
+static int lightning_compare_check(void)
+{
+	jit_state_t *_jit = jit_new_state();
+	jit_node_t *arg;
+	uint32_t (*compare)(uint32_t);
+	int ok = 0;
+
+	jit_prolog();
+	arg = jit_arg();
+	jit_getarg(JIT_R0, arg);
+	jit_lti(JIT_R1, JIT_R0, 0xccd);
+	jit_lti_u(JIT_R0, JIT_R0, 0x1000);
+	jit_lshi(JIT_R0, JIT_R0, 1);
+	jit_orr(JIT_R0, JIT_R0, JIT_R1);
+	jit_retr(JIT_R0);
+	jit_epilog();
+	jit_realize();
+	jit_set_data(NULL, 0, JIT_DISABLE_DATA | JIT_DISABLE_NOTE);
+	jit_set_code(lightning_buffer, sizeof(lightning_buffer));
+	compare = (uint32_t (*)(uint32_t))jit_emit();
+	if (compare) {
+		tpx_runtime_sync_icache();
+		ok = compare(0xcccu) == 3u && compare(0xfffu) == 2u &&
+			compare(0x1000u) == 0u && compare(0xffffffffu) == 1u;
+	}
+	jit_destroy_state();
+	return ok;
+}
+
 static int lightning_check(void)
 {
 	uint32_t small, full;
@@ -336,6 +365,12 @@ int main(void)
 		(unsigned long)hw_loads, (unsigned long)code_invalidations,
 		(unsigned long)tpx_runtime_heap_used());
 	lightrec_destroy(state);
+	init_jit(NULL);
+	round = lightning_compare_check();
+	finish_jit();
+	fprintf(stderr, "large signed/unsigned compares: %s\n",
+		round ? "ok" : "FAIL");
+	ok = ok && round;
 	fprintf(stderr, "%s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

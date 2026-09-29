@@ -10,6 +10,11 @@
 
 #include "machine.h"
 #include "tpx_api.h"
+#ifdef PSX_DISC_LIGHTREC
+#include "psx_lightrec.h"
+#include "tpx_runtime.h"
+#define CODE_BUFFER_BYTES (8u << 20)
+#endif
 
 #ifndef RUN_TIMEOUT_SECONDS
 #define RUN_TIMEOUT_SECONDS  0u       /* zero runs until the core is reset */
@@ -39,6 +44,9 @@ static uint8_t psx_ram[PSX_MAIN_RAM_BYTES];
 static uint16_t *const psx_vram =
 	(uint16_t *)(uintptr_t)PSX_VRAM_BASE;
 static struct psx_machine machine;
+#ifdef PSX_DISC_LIGHTREC
+static uint8_t code_buffer[CODE_BUFFER_BYTES] __attribute__((aligned(4096)));
+#endif
 static struct window windows[2];
 static const struct tpx_api *api;
 static uint32_t disc_sectors;
@@ -206,8 +214,14 @@ uint32_t main(const struct tpx_api *loader)
 	uint32_t next_vblank = FRAME_CYCLES;
 	uint32_t next_publish = 1000u;
 	uint32_t frames = 0;
+#ifdef PSX_DISC_LIGHTREC
+	uint32_t flags;
+#endif
 
 	api = loader;
+#ifdef PSX_DISC_LIGHTREC
+	tpx_runtime_bind(api, 0x8002bad4u);
+#endif
 	api->set_reg(TPX_REG_STAGE, 0x00020001u);
 	api->set_reg(TPX_REG_FAILURE, 0);
 	log_text("PSX disc boot\n");
@@ -232,6 +246,14 @@ uint32_t main(const struct tpx_api *loader)
 		disc.region = 'A';
 		psx_machine_insert_disc(&machine, &disc);
 	}
+#ifdef PSX_DISC_LIGHTREC
+	if (psx_lightrec_init(&machine, code_buffer, sizeof(code_buffer))) {
+		api->set_reg(TPX_REG_FAILURE, 3u);
+		api->set_reg(TPX_REG_STAGE, 0x8002bad3u);
+		log_text("Lightrec init failed\n");
+		return 0xdead2003u;
+	}
+#endif
 	start_cycle = read_cycle();
 #if RUN_TIMEOUT_SECONDS
 	while (elapsed_ms() < RUN_TIMEOUT_SECONDS * 1000u) {
@@ -255,7 +277,21 @@ uint32_t main(const struct tpx_api *loader)
 				profile_display_cycles += read_cycle() - profile_start;
 			}
 		} else {
+#ifdef PSX_DISC_LIGHTREC
+			uint64_t cpu_start = read_cycle();
+			flags = psx_lightrec_run(&machine, SERVICE_INSTRUCTIONS);
+			machine.profile_cpu_cycles += read_cycle() - cpu_start;
+			if (flags) {
+				publish();
+				api->set_reg(TPX_REG_FAILURE, flags);
+				api->set_reg(TPX_REG_STAGE, 0x8002bad5u);
+				log_decimal("Lightrec exit ", flags);
+				log_text("\n");
+				return 0xdead2005u;
+			}
+#else
 			psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
+#endif
 		}
 		if (elapsed_ms() >= next_publish) {
 			publish();
