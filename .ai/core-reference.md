@@ -123,6 +123,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | What limits 75 MHz timing in LiteDRAM's Wishbone burst frontend? | TOOL | TOOL-006 |
 | How do I regenerate Gowin IP without the GUI? | TOOL | TOOL-001, TOOL-002 |
 | Which Gowin place-and-route options can change timing closure? | TOOL | TOOL-007 |
+| Can GNU Lightning / Lightrec generate RV32 code? | TOOL | TOOL-008 |
+| How does ilp32d pass doubles in integer registers and on the stack? | TOOL | TOOL-009 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
@@ -167,6 +169,8 @@ TOOL-004: "LiteX registers its Wishbone-to-CSR bridge only when the SoC has a Li
 TOOL-005: "LiteX CSRStatus(fields=...) drives status from its field signals; drive the fields, not status"
 TOOL-006: "LiteDRAMWishbone2Native's narrow-to-wide burst path compares full addresses combinationally to merge and cache; it fails 75 MHz on GW5AST behind the AE350"
 TOOL-007: "SUG100 section 8.3: set_option -place_option 0-4, -route_option 0-2 select placement and routing algorithms; -replicate_resources 1 replicates high-fanout logic"
+TOOL-008: "Upstream GNU Lightning's RISC-V backend is RV64-only; Tang-PSX's RV32 port is third_party/patches/gnu-lightning-rv32.patch; ww/d pairs are in memory order"
+TOOL-009: "ilp32d doubles: fa0-fa7, then a GPR pair, a7+stack split, or an 8-aligned stack slot; variadic doubles use even GPR pairs and never split"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
@@ -519,6 +523,31 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
   sources:
     - "Gowin Software User Guide SUG100-4.4.2E, section 8.3 Command Description, shipped as IDE/doc/EN/SUG100-4.4.2E_Gowin Software User Guide.pdf in Gowin EDA 1.9.11.03 (SHA-256 708f510811c6deb9320da118c7f04f656da41a54a62291cf8079ffcb40870f83)"
   verification: "On 2026-09-29 (core-log entry 29) the same Gate 1 netlist at placement 3 routed to different timing with route options 0, 1, and 2, and enabling replicate_resources changed every placement's result."
+
+- record_id: TOOL-008
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "GNU Lightning RISC-V backend word size and register-pair order"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "At commit a6bb2b5a7cf3 the GNU Lightning RISC-V backend is 64-bit only: lib/jit_riscv.c ends with #error \"only 64 bit ports tested\" for __WORDSIZE != 64, and lib/jit_riscv-sz.c has only a __WORDSIZE == 64 size table. Lightrec (a7464ccc65c5) emits all code through GNU Lightning. doc/body.texi defines movr_ww_d, movi_ww_d, movr_d_ww, and movi_d_ww (32-bit only) with the integer pair in memory order, so on little-endian targets the first register holds the low word."
+  consequence: "Lightrec cannot target the RV32 AE350 without an RV32 Lightning backend. Tang-PSX adds one in third_party/patches/gnu-lightning-rv32.patch, applied by tools/lightning_source.py and tested by tests/test_lightning_rv32.py; its lib/jit_fallback.c change corrects the little-endian unldi_x/unsti_x pair order to this definition."
+  sources:
+    - "GNU Lightning via notaz/gnu_lightning commit a6bb2b5a7cf36e074e12ccaed32990b437deb784: lib/jit_riscv.c, lib/jit_riscv-sz.c, lib/jit_fallback.c, doc/body.texi"
+    - "Lightrec commit a7464ccc65c5360897ff6814d9707968f34a1d2b, lightning-wrapper.h"
+  verification: "The unpatched RV32 build stops at the #error; the patched check suite passes under qemu-riscv32 (core-log entry 31). The canonical git.savannah.gnu.org repository could not be reached on 2026-09-29, so a newer upstream RV32 port is not excluded."
+
+- record_id: TOOL-009
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "GCC ilp32d passing of double arguments"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "With -march=rv32imafdc -mabi=ilp32d, GCC passes a named double in fa0-fa7 while one is free, then as an integer register pair (low word in the lower-numbered register). When only a7 remains, the low word goes in a7 and the high word in the first stack slot. Stack doubles are 8-byte aligned (an int at sp+0 is followed by a double at sp+8). Variadic doubles use an even-aligned register pair (a1 is skipped after a0) or, when only a7 remains, an 8-byte aligned stack slot without splitting."
+  consequence: "The RV32 Lightning backend in TOOL-008 follows these rules for arg_d, getarg_d, putarg*_d, pusharg*_d, and va_arg_d. Code built with -mabi=ilp32, as the AE350 programs are, instead passes named floating-point arguments in integer registers; the backend does not implement that, which Lightrec does not need."
+  sources:
+    - "riscv64-unknown-elf-gcc 10.2.0 (Xuantie-900 elf newlib Toolchain V2.6.1 B-20220906) assembly output for calls with 8 doubles plus 7 or 9 ints plus a double, and printf with an int and a double"
+  verification: "Read from the compiler's generated assembly on 2026-09-29, and confirmed when Lightning's ccall, carg, and cva_list checks passed against GCC-compiled C under qemu-riscv32 with ilp32d (core-log entry 31). The RISC-V ELF psABI document itself was not consulted."
 
 - record_id: TOOL-001
   kind: TOOLCHAIN
