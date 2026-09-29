@@ -2,6 +2,27 @@
 
 #include "machine.h"
 
+#if defined(__riscv) && __riscv_xlen == 32
+/* 64-bit cycle count; one profiled operation can outlast 32-bit wrap. */
+static inline uint64_t profile_cycle(void)
+{
+	uint32_t high;
+	uint32_t low;
+	uint32_t check;
+	do {
+		__asm__ volatile ("rdcycleh %0" : "=r"(high));
+		__asm__ volatile ("rdcycle %0" : "=r"(low));
+		__asm__ volatile ("rdcycleh %0" : "=r"(check));
+	} while (high != check);
+	return ((uint64_t)high << 32) | low;
+}
+#else
+static inline uint64_t profile_cycle(void)
+{
+	return 0;
+}
+#endif
+
 static uint32_t load_le(const uint8_t *data, uint32_t bytes)
 {
 	uint32_t value = data[0];
@@ -231,12 +252,15 @@ static void start_dma(struct psx_machine *machine, uint32_t channel)
 		return;
 	if (sync == 0u && !(control & (1u << 28)))
 		return;
-	if (channel == 2u)
+	if (channel == 2u) {
+		uint64_t start = profile_cycle();
 		run_dma_gpu(machine);
-	else if (channel == 6u)
+		machine->profile_gpu_cycles += profile_cycle() - start;
+	} else if (channel == 6u) {
 		run_dma_otc(machine);
-	else
+	} else {
 		complete_dma(machine, channel);
+	}
 }
 
 static uint32_t read_io(struct psx_machine *machine, uint32_t address,
@@ -359,7 +383,9 @@ static void write_io(struct psx_machine *machine, uint32_t address,
 			machine->timer_target[timer] = part_write(
 				machine->timer_target[timer], address, bytes, value);
 	} else if (aligned == 0x1f801810u) {
+		uint64_t start = profile_cycle();
 		psx_gpu_write_gp0(&machine->gpu, value);
+		machine->profile_gpu_cycles += profile_cycle() - start;
 	} else if (aligned == 0x1f801814u) {
 		psx_gpu_write_gp1(&machine->gpu, value);
 	} else if (address >= 0x1f801c00u && address < 0x1f802000u) {
@@ -1068,9 +1094,14 @@ int psx_machine_run(struct psx_machine *machine, uint32_t instruction_limit)
 	int result = 0;
 	for (i = 0; i < instruction_limit;) {
 		uint32_t run;
+		uint64_t start;
 		int run_result;
+		int accelerated;
 		update_interrupts(machine);
-		if (accelerate_delay_loop(machine)) {
+		start = profile_cycle();
+		accelerated = accelerate_delay_loop(machine);
+		machine->profile_accel_cycles += profile_cycle() - start;
+		if (accelerated) {
 			cd_service(machine);
 			++i;
 			continue;
@@ -1082,7 +1113,9 @@ int psx_machine_run(struct psx_machine *machine, uint32_t instruction_limit)
 		if ((machine->cpu.pc & 0x1fffffffu) >= 0x00049900u &&
 		    (machine->cpu.pc & 0x1fffffffu) < 0x00049c40u)
 			run = 1u;
+		start = profile_cycle();
 		run_result = psx_jit_run(&machine->jit, &machine->cpu, run);
+		machine->profile_cpu_cycles += profile_cycle() - start;
 		if (run_result)
 			result = run_result;
 		cd_service(machine);

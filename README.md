@@ -74,6 +74,17 @@ and merges cache-line bursts without address compares, so the 75 MHz system
 clock closes timing; `python3 gateware/sim/test_ae350_ram_bridge.py` simulates
 it.
 
+The A25 core clock comes from the AE350's dedicated PLL at `PLL_R[0]`
+(`gateware/ae350_pll.v`, 50 MHz x 15 = 750 MHz VCO). The macro takes its core
+clock from that PLL's `CLKOUT1`, whatever the netlist connects to `CORE_CLK`:
+with 750 MHz on `CLKOUT0` and 75 MHz on `CLKOUT1`, the core measured 75 MHz,
+and it followed `CLKOUT1` to 50 MHz when only that divider changed. The CPU
+clock is therefore generated on `CLKOUT1` (`ODIV1 = 1`, 750 MHz) and wired to
+`CORE_CLK` from there. `build/programs/clock/clock.tpx` checks it: it runs a
+dependent `addi` chain for 2^30 counted cycles, which `tools/ae350_run.py run`
+reports finishing about 1.4 s after the stream starts at 750 MHz. Gate 1 images
+built before this fix ran the core at 75 MHz.
+
 ## AE350 program loader
 
 After the Gate 1 checks pass, the ROM firmware waits for Tang-Control stream
@@ -156,17 +167,42 @@ PSX_BIOS=/path/to/scph1001.bin scripts/build-programs.sh psx_bios
 PSX_BIOS=/path/to/scph1001.bin python3 tests/test_psx_bios.py
 python3 tools/ae350_run.py upload build/programs/psx_bios/psx_bios.tpx
 # Load Gate 1 before running this command.
-python3 tools/ae350_run.py run psx_bios.tpx --timeout 900
+python3 tools/ae350_run.py run psx_bios.tpx --timeout 60
 ```
 
 The run progresses from black through a brightening gray background, animates
 the orange/red diamond, and finishes with the blue `SONY`, `TM`, and
-`COMPUTER ENTERTAINMENT` text. Success returns `0xb1051001` at stage
-`0x80011001`. The deterministic checkpoint executes 99,999,544 guest
-instructions, consumes 10,768 GPU words and 158,497 DMA words, draws 414
-primitives, and performs 63 image uploads. This proves the startup-logo path;
-CD media, controllers, memory cards, audio synthesis, and continued execution
+`COMPUTER ENTERTAINMENT` text, about 5.9 s after start on the 750 MHz AE350.
+Success returns `0xb1051001` at stage `0x80011001`. The event-driven checkpoint
+counts 27,870,497 guest instructions (21,984,983 of them in signature-checked
+loop accelerators), consumes 10,768 GPU words and 158,497 DMA words, draws 414
+primitives, performs 63 image uploads, and delivers 144 VBlanks. The runner
+gives up after 30 s with result `0xdead1002`, publishes progress registers once
+per second, and ends its log with a timing summary such as
+`ms t5866 v13 1510 cpu 5583 gpu 3753 acc 127 dsp 125` (total, time to VBlank 13,
+CPU emulation including GPU, GPU, accelerators, and display copy, in
+milliseconds) followed by `jit <compiled> fb <interpreted> fl <flushes>`
+instruction and cache-flush counts. This proves the startup-logo path; CD
+media, controllers, memory cards, audio synthesis, and continued execution
 into the BIOS menu or a game remain future work.
+
+The R3000A runs through a hybrid RV32 recompiler (`software/psx/jit.c`) that
+compiles hot basic blocks and interprets everything else up to the end of the
+current basic block. Triangles are rasterized with incrementally stepped edge
+functions and exact quotient/remainder interpolation, so each pixel needs no
+division yet matches the original per-pixel barycentric division bit for bit.
+Three host checks cover this:
+
+```sh
+python3 tests/test_psx_gpu.py       # 40,000 random polygons vs the pinned reference rasterizer
+python3 tests/test_psx_jit.py       # generated RV32 code under qemu-riscv32
+PSX_BIOS=/path/to/scph1001.bin python3 tests/test_psx_bios_jit.py
+```
+
+The last boots the BIOS to the logo through the real RV32 JIT under
+`qemu-riscv32` and requires the host checkpoint's telemetry and framebuffer
+exactly. Because the service loop is event driven, its JIT statistics are the
+ones the AE350 produces.
 
 ## HDMI framebuffer output
 
@@ -210,7 +246,9 @@ installation are detected automatically; `RISCV_TOOLCHAIN_BIN` and
 The build regenerates the Gowin DDR3 IP into `build/gate1-ip` first. The
 Tang-Control loadable images are `build/gate1-place<N>/tang-psx-gate1.bin`. The
 larger `.fs` file beside the generated gateware is Gowin's textual fuse image,
-not the SD-card core format.
+not the SD-card core format. Diagnostic variants pass extra
+`gateware/ae350_gate1.py` options in `TANG_PSX_GATE1_ARGS` (for example
+`--ae350-cpu-odiv 2`) and build under `build/<TANG_PSX_GATE1_NAME>-place<N>`.
 
 ## Standalone DDR3 controller test
 

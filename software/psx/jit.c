@@ -459,7 +459,7 @@ static int compile_block(struct psx_jit *jit, struct psx_cpu *cpu,
 	int terminated = 0;
 
 	if (jit->code_words + 1024u > PSX_JIT_CODE_WORDS)
-		psx_jit_reset(jit);
+		psx_jit_flush(jit);
 	emitter.code = &jit->code[jit->code_words];
 	emitter.words = 0;
 	emitter.capacity = PSX_JIT_CODE_WORDS - jit->code_words;
@@ -573,6 +573,7 @@ static int compile_block(struct psx_jit *jit, struct psx_cpu *cpu,
 		block->source_words = (uint8_t)source_words;
 		block->guest_instructions = 0u;
 		block->valid = 2u;
+		++jit->rejected_blocks;
 		return 0;
 	}
 	if (!terminated && emit_exit(&emitter, count, pc + count * 4u, 0, 0u,
@@ -584,6 +585,7 @@ static int compile_block(struct psx_jit *jit, struct psx_cpu *cpu,
 	block->guest_instructions = (uint8_t)count;
 	block->valid = 1u;
 	jit->code_words += emitter.words;
+	jit->compiled_words += emitter.words;
 	++jit->compiled_blocks;
 #if defined(__riscv) && __riscv_xlen == 32
 	__asm__ volatile ("fence rw,rw\n\tfence.i" ::: "memory");
@@ -621,17 +623,72 @@ static int rejected_block_matches(const struct psx_jit_block *block,
 	return 1;
 }
 
-void psx_jit_reset(struct psx_jit *jit)
+void psx_jit_flush(struct psx_jit *jit)
 {
 	uint32_t n;
 	for (n = 0; n < PSX_JIT_BLOCK_COUNT; ++n)
 		jit->blocks[n].valid = 0;
 	jit->code_words = 0;
+	++jit->cache_flushes;
+}
+
+void psx_jit_reset(struct psx_jit *jit)
+{
+	uint32_t n;
+	for (n = 0; n < PSX_JIT_BLOCK_COUNT; ++n) {
+		jit->blocks[n].pc = 0;
+		jit->blocks[n].valid = 0;
+		jit->blocks[n].hot_count = 0;
+	}
+	jit->code_words = 0;
 	jit->compiled_blocks = 0;
+	jit->compiled_words = 0;
+	jit->rejected_blocks = 0;
 	jit->executed_blocks = 0;
 	jit->executed_instructions = 0;
 	jit->interpreter_instructions = 0;
-	++jit->cache_flushes;
+	jit->cache_flushes = 0;
+	jit->evictions = 0;
+	jit->invalidations = 0;
+	jit->early_exits = 0;
+	jit->fallback_state = 0;
+	jit->fallback_rejected = 0;
+	jit->fallback_cold = 0;
+	jit->fallback_budget = 0;
+	jit->fallback_bailout = 0;
+}
+
+/*
+ * Interpret from the current PC to the end of its basic block: through the
+ * delay slot of the next control transfer, into an exception, or up to a PC
+ * that already has a compiled block. Only block entries then reach the
+ * dispatcher, so interpreted instructions neither pay a lookup each nor evict
+ * the compiled block that shares their slot.
+ */
+static uint32_t interpret(struct psx_jit *jit, struct psx_cpu *cpu,
+	uint32_t limit, uint32_t *counter, int *result)
+{
+	uint32_t count = 0;
+
+	while (count < limit) {
+		const struct psx_jit_block *next;
+		int delay_slot = cpu->in_delay_slot;
+		int step = psx_cpu_run(cpu, 1u);
+		++count;
+		if (step) {
+			*result = step;
+			break;
+		}
+		if (delay_slot)
+			break;
+		next = &jit->blocks[(cpu->pc >> 2) & (PSX_JIT_BLOCK_COUNT - 1u)];
+		if (next->valid == 1u && next->pc == cpu->pc &&
+		    !cpu->load_pending && !cpu->in_delay_slot)
+			break;
+	}
+	jit->interpreter_instructions += count;
+	*counter += count;
+	return count;
 }
 
 int psx_jit_run(struct psx_jit *jit, struct psx_cpu *cpu,
@@ -644,27 +701,26 @@ int psx_jit_run(struct psx_jit *jit, struct psx_cpu *cpu,
 		struct psx_jit_block *block =
 			&jit->blocks[(cpu->pc >> 2) & (PSX_JIT_BLOCK_COUNT - 1u)];
 		uint32_t remaining = instruction_limit - executed;
-		int compiled;
 		if (cpu->load_pending || cpu->in_delay_slot ||
 		    ((cpu->cp0[12] & 1u) &&
 		    (cpu->cp0[12] & cpu->cp0[13] & 0x0000ff00u))) {
-			int step = psx_cpu_run(cpu, 1u);
-			if (step)
-				result = step;
-			++jit->interpreter_instructions;
-			++executed;
+			executed += interpret(jit, cpu, remaining,
+				&jit->fallback_state, &result);
 			continue;
 		}
 		if (rejected_block_matches(block, cpu)) {
-			int step = psx_cpu_run(cpu, 1u);
-			if (step)
-				result = step;
-			++jit->interpreter_instructions;
-			++executed;
+			executed += interpret(jit, cpu, remaining,
+				&jit->fallback_rejected, &result);
 			continue;
 		}
 		if (!block_matches(block, cpu)) {
 			if (block->pc != cpu->pc || block->valid != 0u) {
+				if (block->valid == 1u) {
+					if (block->pc != cpu->pc)
+						++jit->evictions;
+					else
+						++jit->invalidations;
+				}
 				block->pc = cpu->pc;
 				block->valid = 0u;
 				block->hot_count = 1u;
@@ -672,24 +728,21 @@ int psx_jit_run(struct psx_jit *jit, struct psx_cpu *cpu,
 				++block->hot_count;
 			}
 			if (block->hot_count < JIT_HOT_COUNT) {
-				int step = psx_cpu_run(cpu, 1u);
-				if (step)
-					result = step;
-				++jit->interpreter_instructions;
-				++executed;
+				executed += interpret(jit, cpu, remaining,
+					&jit->fallback_cold, &result);
 				continue;
 			}
-			compiled = compile_block(jit, cpu, block);
-			if (compiled < 0)
+			if (compile_block(jit, cpu, block) < 0)
 				block->valid = 0;
+			if (block->valid != 1u) {
+				executed += interpret(jit, cpu, remaining,
+					&jit->fallback_rejected, &result);
+				continue;
+			}
 		}
-		if (!block_matches(block, cpu) ||
-		    block->guest_instructions > remaining) {
-			int step = psx_cpu_run(cpu, 1u);
-			if (step)
-				result = step;
-			++jit->interpreter_instructions;
-			++executed;
+		if (block->guest_instructions > remaining) {
+			executed += interpret(jit, cpu, remaining,
+				&jit->fallback_budget, &result);
 			continue;
 		}
 #if defined(__riscv) && __riscv_xlen == 32
@@ -701,28 +754,22 @@ int psx_jit_run(struct psx_jit *jit, struct psx_cpu *cpu,
 			++jit->executed_blocks;
 			/*
 			 * A guarded memory operation can bail out before the first
-			 * instruction in a block. Interpret that instruction here so
-			 * the dispatcher always makes forward progress.
+			 * instruction in a block. Interpret from there so the
+			 * dispatcher always makes forward progress.
 			 */
 			if (count == 0u) {
-				int step = psx_cpu_run(cpu, 1u);
-				if (step)
-					result = step;
-				++jit->interpreter_instructions;
-				++executed;
+				executed += interpret(jit, cpu, remaining,
+					&jit->fallback_bailout, &result);
 				continue;
 			}
+			if (count < block->guest_instructions)
+				++jit->early_exits;
 			jit->executed_instructions += count;
 			executed += count;
 		}
 #else
-		{
-			int step = psx_cpu_run(cpu, 1u);
-			if (step)
-				result = step;
-			++jit->interpreter_instructions;
-			++executed;
-		}
+		executed += interpret(jit, cpu, remaining,
+			&jit->fallback_budget, &result);
 #endif
 	}
 	return result;

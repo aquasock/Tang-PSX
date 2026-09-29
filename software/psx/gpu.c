@@ -101,6 +101,88 @@ static int64_t edge(const struct vertex *a, const struct vertex *b,
 		(int64_t)(y - a->y) * (b->x - a->x);
 }
 
+/*
+ * Exact incremental barycentric interpolation. An attribute is
+ * N(x, y) / A, where N = wa*ca + wb*cb + wc*cc is affine in x and y and A is
+ * the triangle's doubled area, both sign-normalised so A > 0. Inside the
+ * triangle N >= 0, so the truncating division used by the reference equals
+ * floor(N / A). Keeping N as quotient q and remainder r in [0, A) lets a unit
+ * step add a precomputed quotient/remainder pair with one carry compare, so
+ * each pixel needs no division and no 64-bit arithmetic.
+ */
+struct interpolant {
+	int32_t q;
+	int32_t r;
+	int32_t qx;
+	int32_t rx;
+	int32_t qy;
+	int32_t ry;
+};
+
+static void floor_divide(int64_t n, int32_t a, int32_t *q, int32_t *r)
+{
+	int64_t quotient = n / a;
+	int64_t remainder = n % a;
+	if (remainder < 0) {
+		remainder += a;
+		--quotient;
+	}
+	*q = (int32_t)quotient;
+	*r = (int32_t)remainder;
+}
+
+static void interpolant_setup(struct interpolant *value, int64_t n,
+	int64_t dx, int64_t dy, int32_t area)
+{
+	floor_divide(n, area, &value->q, &value->r);
+	floor_divide(dx, area, &value->qx, &value->rx);
+	floor_divide(dy, area, &value->qy, &value->ry);
+}
+
+static inline void interpolant_step(int32_t *q, int32_t *r, int32_t dq,
+	int32_t dr, int32_t area)
+{
+	*q += dq;
+	*r += dr;
+	if (*r >= area) {
+		*r -= area;
+		++*q;
+	}
+}
+
+/* Advance by count unit steps along x from (q, r). */
+static inline void interpolant_skip(int32_t *q, int32_t *r,
+	const struct interpolant *value, int32_t count, int32_t area)
+{
+	int64_t remainder = (int64_t)*r + (int64_t)value->rx * count;
+	*q += value->qx * count + (int32_t)(remainder / area);
+	*r = (int32_t)(remainder % area);
+}
+
+static inline uint16_t shade15(int32_t red, int32_t green, int32_t blue)
+{
+	if (red > 255) red = 255;
+	if (red < 0) red = 0;
+	if (green > 255) green = 255;
+	if (green < 0) green = 0;
+	if (blue > 255) blue = 255;
+	if (blue < 0) blue = 0;
+	return (uint16_t)((red >> 3) | ((green >> 3) << 5) | ((blue >> 3) << 10));
+}
+
+/*
+ * Store one pixel of a span that is already clipped to the drawing area,
+ * applying the mask-bit test and set exactly as put_pixel does.
+ */
+static inline void store_span_pixel(const struct psx_gpu *gpu,
+	uint16_t *destination, uint16_t value)
+{
+	if ((gpu->mask_bits & 2u) && (*destination & 0x8000u))
+		return;
+	*destination = (gpu->mask_bits & 1u) ? (uint16_t)(value | 0x8000u) :
+		value;
+}
+
 static void draw_triangle(struct psx_gpu *gpu, const struct vertex *a,
 	const struct vertex *b, const struct vertex *c, int textured, int raw,
 	uint32_t clut, uint32_t page)
@@ -109,7 +191,26 @@ static void draw_triangle(struct psx_gpu *gpu, const struct vertex *a,
 	int32_t max_x = a->x;
 	int32_t min_y = a->y;
 	int32_t max_y = a->y;
-	int64_t area = edge(a, b, c->x, c->y);
+	int64_t signed_area = edge(a, b, c->x, c->y);
+	int32_t sign = signed_area > 0 ? 1 : -1;
+	int32_t area;
+	/* Edge functions: wa is opposite a, wb opposite b, wc opposite c. */
+	int32_t ea_dx = sign * (c->y - b->y);
+	int32_t ea_dy = -sign * (c->x - b->x);
+	int32_t eb_dx = sign * (a->y - c->y);
+	int32_t eb_dy = -sign * (a->x - c->x);
+	int32_t ec_dx = sign * (b->y - a->y);
+	int32_t ec_dy = -sign * (b->x - a->x);
+	int32_t row_ea;
+	int32_t row_eb;
+	int32_t row_ec;
+	struct interpolant attribute[5];
+	const int32_t va[5] = {a->r, a->g, a->b, a->u, a->v};
+	const int32_t vb[5] = {b->r, b->g, b->b, b->u, b->v};
+	const int32_t vc[5] = {c->r, c->g, c->b, c->u, c->v};
+	uint32_t attributes = textured ? 5u : 3u;
+	int flat_rows;
+	uint32_t n;
 	int32_t y;
 
 	if (b->x < min_x) min_x = b->x;
@@ -120,62 +221,114 @@ static void draw_triangle(struct psx_gpu *gpu, const struct vertex *a,
 	if (c->y < min_y) min_y = c->y;
 	if (b->y > max_y) max_y = b->y;
 	if (c->y > max_y) max_y = c->y;
-	if (area == 0)
+	if (signed_area == 0)
 		return;
+	area = (int32_t)(signed_area * sign);
 	if (min_x < (int32_t)gpu->draw_x0) min_x = (int32_t)gpu->draw_x0;
 	if (max_x > (int32_t)gpu->draw_x1) max_x = (int32_t)gpu->draw_x1;
 	if (min_y < (int32_t)gpu->draw_y0) min_y = (int32_t)gpu->draw_y0;
 	if (max_y > (int32_t)gpu->draw_y1) max_y = (int32_t)gpu->draw_y1;
+	if (min_x > max_x || min_y > max_y)
+		return;
+
+	row_ea = (int32_t)(sign * edge(b, c, min_x, min_y));
+	row_eb = (int32_t)(sign * edge(c, a, min_x, min_y));
+	row_ec = (int32_t)(sign * edge(a, b, min_x, min_y));
+	for (n = 0; n < attributes; ++n) {
+		int64_t ca = va[n];
+		int64_t cb = vb[n];
+		int64_t cc = vc[n];
+		interpolant_setup(&attribute[n],
+			row_ea * ca + row_eb * cb + row_ec * cc,
+			ea_dx * ca + eb_dx * cb + ec_dx * cc,
+			ea_dy * ca + eb_dy * cb + ec_dy * cc, area);
+	}
+
+	/* Colour constant along x: each row is a single-value fill. */
+	flat_rows = attribute[0].qx == 0 && attribute[0].rx == 0 &&
+		attribute[1].qx == 0 && attribute[1].rx == 0 &&
+		attribute[2].qx == 0 && attribute[2].rx == 0;
+
 	for (y = min_y; y <= max_y; ++y) {
-		int32_t x;
-		for (x = min_x; x <= max_x; ++x) {
-			int64_t wa = edge(b, c, x, y);
-			int64_t wb = edge(c, a, x, y);
-			int64_t wc = edge(a, b, x, y);
-			int32_t r;
-			int32_t g;
-			int32_t blue;
-			uint16_t pixel;
-			if ((area > 0 && (wa < 0 || wb < 0 || wc < 0)) ||
-			    (area < 0 && (wa > 0 || wb > 0 || wc > 0)))
-				continue;
-			r = (int32_t)((wa * a->r + wb * b->r + wc * c->r) / area);
-			g = (int32_t)((wa * a->g + wb * b->g + wc * c->g) / area);
-			blue = (int32_t)((wa * a->b + wb * b->b + wc * c->b) / area);
-			if (textured) {
-				int32_t u = (int32_t)((wa * a->u + wb * b->u +
-					wc * c->u) / area);
-				int32_t v = (int32_t)((wa * a->v + wb * b->v +
-					wc * c->v) / area);
-				uint16_t texel = texture_pixel(gpu, u, v, clut, page);
-				uint32_t tex_color;
-				if ((texel & 0x7fffu) == 0u)
-					continue;
-				if (raw) {
-					put_pixel(gpu, x, y, texel);
-					continue;
-				}
-				tex_color = color24(texel);
-				r = (((int32_t)(tex_color & 0xffu) * r) >> 7);
-				g = (((int32_t)((tex_color >> 8) & 0xffu) * g) >> 7);
-				blue = (((int32_t)((tex_color >> 16) & 0xffu) * blue) >> 7);
-			}
-			if (r > 255)
-				r = 255;
-			if (r < 0)
-				r = 0;
-			if (g > 255)
-				g = 255;
-			if (g < 0)
-				g = 0;
-			if (blue > 255)
-				blue = 255;
-			if (blue < 0)
-				blue = 0;
-			pixel = (uint16_t)((r >> 3) | ((g >> 3) << 5) |
-				((blue >> 3) << 10));
-			put_pixel(gpu, x, y, pixel);
+		int32_t ea = row_ea;
+		int32_t eb = row_eb;
+		int32_t ec = row_ec;
+		int32_t q[5];
+		int32_t r[5];
+		int32_t x = min_x;
+
+		/* Skip to the first covered pixel; the span is contiguous. */
+		while (x <= max_x && (ea | eb | ec) < 0) {
+			ea += ea_dx;
+			eb += eb_dx;
+			ec += ec_dx;
+			++x;
 		}
+		for (n = 0; n < attributes; ++n) {
+			q[n] = attribute[n].q;
+			r[n] = attribute[n].r;
+			if (x != min_x)
+				interpolant_skip(&q[n], &r[n], &attribute[n],
+					x - min_x, area);
+		}
+		if (!textured) {
+			/* Span end: the first x where an edge goes negative. */
+			int32_t end = x;
+			uint16_t *destination =
+				&gpu->vram[(uint32_t)y * PSX_VRAM_WIDTH +
+				(uint32_t)x];
+			while (end <= max_x && (ea | eb | ec) >= 0) {
+				ea += ea_dx;
+				eb += eb_dx;
+				ec += ec_dx;
+				++end;
+			}
+			if (flat_rows) {
+				uint16_t pixel = shade15(q[0], q[1], q[2]);
+				for (; x < end; ++x)
+					store_span_pixel(gpu, destination++,
+						pixel);
+			} else {
+				for (; x < end; ++x) {
+					store_span_pixel(gpu, destination++,
+						shade15(q[0], q[1], q[2]));
+					for (n = 0; n < 3u; ++n)
+						interpolant_step(&q[n], &r[n],
+							attribute[n].qx, attribute[n].rx,
+							area);
+				}
+			}
+		} else {
+			for (; x <= max_x && (ea | eb | ec) >= 0; ++x) {
+				uint16_t texel = texture_pixel(gpu, q[3], q[4],
+					clut, page);
+				if ((texel & 0x7fffu) == 0u) {
+					/* Texel 0000h is transparent. */
+				} else if (raw) {
+					put_pixel(gpu, x, y, texel);
+				} else {
+					uint32_t tex_color = color24(texel);
+					int32_t tr = (int32_t)(tex_color & 0xffu);
+					int32_t tg = (int32_t)((tex_color >> 8) & 0xffu);
+					int32_t tb = (int32_t)((tex_color >> 16) & 0xffu);
+					put_pixel(gpu, x, y, shade15((tr * q[0]) >> 7,
+						(tg * q[1]) >> 7, (tb * q[2]) >> 7));
+				}
+				ea += ea_dx;
+				eb += eb_dx;
+				ec += ec_dx;
+				for (n = 0; n < attributes; ++n)
+					interpolant_step(&q[n], &r[n], attribute[n].qx,
+						attribute[n].rx, area);
+			}
+		}
+
+		row_ea += ea_dy;
+		row_eb += eb_dy;
+		row_ec += ec_dy;
+		for (n = 0; n < attributes; ++n)
+			interpolant_step(&attribute[n].q, &attribute[n].r,
+				attribute[n].qy, attribute[n].ry, area);
 	}
 }
 

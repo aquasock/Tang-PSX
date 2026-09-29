@@ -848,3 +848,46 @@ Continue from the proven `b10` correctness baseline by preventing the small gene
 - User Test: FAIL
 
 ---
+## 26 COMMIT Unreleased 2026-09-28T21:38:24-07:00
+
+#### Coming From:
+
+Unreleased 8ec11cf
+
+#### Purpose:
+
+Measure and remove the bottlenecks that kept the SCPH-1001 logo boot far slower than the roughly 10-second target on the AE350.
+
+#### Outcome:
+
+The SCPH-1001 logo checkpoint now completes on hardware in 5.87 s, after three user-approved plan revisions uncovered first a GPU bottleneck and then a mis-clocked CPU; the user saw the logo come up almost instantly and accepted the result. JIT statistics are now cumulative across cache flushes and count evictions, invalidations, rejected compiles, early exits, and fallback causes, and the interpreter fallback now runs to the end of the current basic block instead of dispatching every instruction. That cut compiles from 2,347 to 832, flushes from 15 to 5, and evictions from 1,953 to 574 to the logo, while JIT coverage fell from 38.6 to 35.9 percent; its separate hardware effect was not measured. `tests/test_psx_bios_jit.py` boots the BIOS to the logo through the real RV32 JIT under `qemu-riscv32` in about 6 s and requires the host telemetry and framebuffer SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7` exactly; because the service loop is event driven, its JIT counts equal the AE350's. With 64-bit cycle attribution added to the runner, a hardware run of the unchanged dispatcher reached only VBlank 121 of 144 in about 300 s of wall time, 95 percent of it in the software GPU, whose `draw_triangle` evaluated 64-bit edge functions and three to five 64-bit divisions per bounding-box pixel. The rewritten rasterizer steps edge functions incrementally and keeps each attribute as an exact quotient and remainder, so it needs no per-pixel division yet matches the old per-pixel barycentric division bit for bit; `tests/test_psx_gpu.py` compares 40,000 random polygons against the rasterizer pinned at `8ec11cf` after every primitive and detected a planted carry-compare mutation. The same runs showed that the AE350 core had been running at 75 MHz rather than 750 MHz, which also means entry 18's cached and uncached MB/s figures and entry 25's MIPS figures are ten times too high, and that entry 25's `b6`/`b10` comparison used a 30 s cutoff at a 75 MHz core. `software/programs/clock` runs a dependent `addi` chain while publishing its cycle and retired-instruction counts. A clock-probe build that changed only the AE350 PLL dividers moved the core from 75.0 MHz to 49.85 MHz when `CLKOUT1` went from 75 MHz to 50 MHz and `CLKOUT0`, which the netlist connected to `CORE_CLK`, went from 750 MHz to 375 MHz, showing that the AE350 takes its core clock from `PLL_R[0]` `CLKOUT1`. The new local `gateware/ae350_pll.v` therefore generates the 750 MHz CPU clock on `CLKOUT1` and wires `CORE_CLK` to it, and `scripts/build-gate1.sh` gained `TANG_PSX_GATE1_ARGS` and `TANG_PSX_GATE1_NAME` for diagnostic variants. Tang-Phosphor's `src/ae350/ae350_pll.v` at `292ae779da23` has the same bug, since it drives `CORE_CLK` from `CLKOUT0`; at the user's direction it was left unchanged. Of four placements only option 3 met all setup and hold timing, including 750 MHz `cpu_clk`, with the same Fmax figures as entry 22. Its 4,894,608-byte image, SHA-256 `a4b63072169bd62a75b8fe633d66f3d19355ba9c8c3f43b7ef6442f633d0e676` and CRC-32 `7c200621`, replaced `cores/console138k/tang-psx-gate1.bin` on the SD card, and Tang-Control verified the readback. On it the Gate 1 self-checks passed (stage `0x80000001`, features `0xff`), and 2^30 counted cycles finished 1.48 s after stream start, which gives at least 725 MHz at 0.994 instructions per cycle. The BIOS runner now uses `api->cpu_hz` and a 64-bit cycle counter, stops after 30 s, publishes progress once per second, and logs a millisecond timing summary. Hardware image `gpu2.tpx`, 574,048 bytes with CRC-32 `6cdbe204`, returned `0xb1051001` at stage `0x80011001` with no HDMI underflow. Its telemetry matched the host checkpoint exactly (27,870,497 guest instructions, 10,768 GPU words, 414 primitives, 63 uploads, 144 VBlanks, 158,497 DMA words, PC `80047c2c`), and its JIT counts matched QEMU. It spent 5,866 ms in total: 3,753 ms in the GPU, 1,830 ms in other CPU emulation, 127 ms in accelerators, and 125 ms copying the display. VBlank 13 arrived at 1,510 ms. All six host and simulation regressions passed, and the final source rebuilds the tested BIOS image byte for byte. `.ai/core-reference.md` gained AE350-007 for the `CLKOUT1` core clock and TCTL-003, which records that `tangctl status` reports `core_running: no` while a core is loaded, so `active_core` is the indicator. The core-syntax audit re-read `.ai/core.md` (updated by the user to device revision C in `aa6c974`) and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged by this cycle, inspected the complete `.ai` diff, validated this entry as number 26 with exactly six sections, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate the next milestone with the user. The software GPU is now 64 percent of boot time; the untested working hypothesis is that its roughly 47 million VRAM pixel writes are bound by DDR3 access through the 75 MHz AE350 RAM port, so profile that before choosing between faster VRAM access and a fabric rasterizer as the next boot-time lever. Beyond that, the BIOS-menu work from entry 24 (CD-ROM, controllers, memory cards, audio, and peripheral timing) remains.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/ae350_pll.v
+- scripts/build-gate1.sh
+- software/programs/clock/main.c
+- software/programs/psx_bios/main.c
+- software/psx/gpu.c
+- software/psx/jit.c
+- software/psx/jit.h
+- software/psx/machine.c
+- software/psx/machine.h
+- tests/psx_bios_rv32.c
+- tests/psx_gpu_diff.c
+- tests/test_psx_bios_jit.py
+- tests/test_psx_gpu.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

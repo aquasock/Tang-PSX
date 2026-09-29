@@ -64,6 +64,13 @@ struct psx_machine {
 	uint32_t bios_trace_pc[32];
 	uint32_t bios_trace_ra[32];
 	uint32_t bios_trace_count;
+	/*
+	 * AE350 cycle attribution; zero on hosts without rdcycle. CPU cycles
+	 * include the GPU cycles spent in GP0 writes and GPU DMA.
+	 */
+	uint64_t profile_cpu_cycles;
+	uint64_t profile_accel_cycles;
+	uint64_t profile_gpu_cycles;
 };
 
 void psx_machine_reset(struct psx_machine *machine, uint8_t *ram,

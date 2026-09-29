@@ -111,6 +111,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | What cache geometry does this board's AE350 report? Does fence.i cover the D-cache? | AE350 | AE350-004 |
 | Why do uncached AE350 benchmarks not measure memory speed? | AE350 | AE350-005 |
 | How much of a system-clock cycle do the AE350 macro's RAM-port inputs need? | AE350 | AE350-006 |
+| Which PLL output clocks the AE350 core? | AE350 | AE350-007 |
 | Which CPU semantics must the R3000A interpreter preserve? | PSXCPU | PSXCPU-001 |
 | Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
 | How are PlayStation GPU commands, status, transfers, drawing, and VRAM laid out? | PSXGPU | PSXGPU-001 |
@@ -121,6 +122,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
 | How do I upload a core and read FPGA registers through Tang-Control? | TCTL | TCTL-001, TCTL-002 |
+| How do I tell from tangctl status that a core is loaded? | TCTL | TCTL-003 |
 
 ---
 
@@ -143,6 +145,7 @@ AE350-003: "The A25 L1 data cache is write-back; the 0xE8000000-0xEFFFFFFF perip
 AE350-005: "With caches off, AE350 code running from the ROM port is instruction-fetch bound (fixed 784/1008 core cycles per loop iteration measured), masking memory latency"
 AE350-006: "Gowin's timing model gives the AE350_SOC RAM-port (DDR_H*) inputs about 5 ns of setup at the macro; register every path into them"
 AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32 B lines, inferred), mmsc_cfg = 0x2007F039; fence.i makes D-cache stores visible to instruction fetch"
+AE350-007: "The A25 core runs at the frequency of PLL_R[0] CLKOUT1, whatever the netlist connects to CORE_CLK; put the CPU clock on CLKOUT1"
 PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
 GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
 PSXGPU-001: "GPU uses GP0/GP1 at 1F801810h/1F801814h and 1024x512 16-bit VRAM; GP0 covers drawing, fills, copies, and CPU/VRAM transfers"
@@ -155,6 +158,7 @@ TOOL-005: "LiteX CSRStatus(fields=...) drives status from its field signals; dri
 TOOL-006: "LiteDRAMWishbone2Native's narrow-to-wide burst path compares full addresses combinationally to merge and cache; it fails 75 MHz on GW5AST behind the AE350"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
+TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
 ```
 
 ---
@@ -362,6 +366,20 @@ TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 b
     - "Gowin EDA 1.9.11.03 place-and-route timing paths (build/gate1-place*/gateware/impl/pnr/project.timing_paths), AE350_SOC endpoints"
   verification: "Read from this project's timing reports (core-log entries 17 and 19)."
 
+- record_id: AE350-007
+  kind: PROCESSOR
+  topic_id: AE350
+  title: "The AE350 core clock is PLL_R[0] CLKOUT1"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "Gowin documents AE350_SOC CORE_CLK as a dedicated clock path of up to 800 MHz, and the AE350 PLL must be placed at PLL_R[0]. On this board the A25 ran at 75.0 MHz when the PLL produced 750 MHz on CLKOUT0 (connected to CORE_CLK in the netlist) and 75 MHz on the unconnected CLKOUT1; changing only CLKOUT0 to 375 MHz and CLKOUT1 to 50 MHz moved the core to 49.85 MHz; and generating 750 MHz on CLKOUT1 and connecting it to CORE_CLK ran the core at 750 MHz. The main system PLL's 75 MHz output and the 50 MHz board clock were unchanged throughout, which excludes them as the source."
+  consequence: "Generate the CPU clock on PLL_R[0] CLKOUT1 and connect CORE_CLK to it (gateware/ae350_pll.v). Gowin timing analysis constrains the CORE_CLK net as declared and does not detect the mismatch. AE350 cycle counts recorded before core-log entry 26, including AE350-005, were taken with a 75 MHz core. Tang-Phosphor's src/ae350/ae350_pll.v still drives CORE_CLK from CLKOUT0."
+  sources:
+    - "Gowin EDA 1.9.11.03, IDE/simlib/gw5a/prim_sim.v: AE350_SOC port comments ('CPU core clock, up to 800MHz, dedicated clock path') and PLL output-divider model"
+    - "litex-boards commit e4307929c38a, litex_boards/targets/sipeed_tang_mega_138k_pro.py: INS_LOC PLL_R[0] for the Gowin AE350"
+    - "Tang-Phosphor commit 292ae779da23, src/ae350/ae350_pll.v (CLKOUT0 = 750 MHz, CLKOUT1 = 75 MHz)"
+  verification: "Inferred from three hardware builds on 2026-09-28 (core-log entry 26). software/programs/clock ran 2^31 and 2^30 counted cycles of a dependent addi chain at 0.94 to 0.99 instructions per cycle; tools/ae350_run.py wall-clock times of 28.69 s, 21.54 s, and 1.48 s give 74.85, 49.85, and at least 725 MHz. No primary document naming CLKOUT1 was found."
+
 - record_id: PSXCPU-001
   kind: PROCESSOR
   topic_id: PSXCPU
@@ -513,6 +531,18 @@ TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 b
     - "Tang-Control commit 26e975bef22b: utils/fpga_debug.h, scripts/tangctl.py"
     - "Tang-Phosphor commit 292ae779da23: src/iosys/iosys_bl616.v, src/iosys/uart_fixed.v"
   verification: "Used at 50 MHz (DDR3 test) and 75 MHz (Gate 1) iosys clocks with zero transport errors."
+
+- record_id: TCTL-003
+  kind: EXTERNAL
+  topic_id: TCTL
+  title: "Loaded-core indication in tangctl status"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "With the Gate 1 core loaded and serving debug requests, `tangctl.py status` reported `active_core: 81` (0x51, the low byte of Gate 1's core ID) together with `core_running: no`. At the TangCore main menu it reported `active_core: 0`."
+  consequence: "Wait for a core with active_core, not core_running. Uploads need active_core 0 (TCTL-001)."
+  sources:
+    - "Tang-Control commit 26e975bef22b, scripts/tangctl.py status output"
+  verification: "Observed repeatedly on 2026-09-28 (core-log entry 26) while Gate 1 answered peek requests."
 ```
 
 ---
