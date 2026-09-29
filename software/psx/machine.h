@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "gpu.h"
+#include "jit.h"
 #include "psx.h"
 
 #define PSX_MAIN_RAM_BYTES (2u * 1024u * 1024u)
@@ -20,6 +21,7 @@ struct psx_dma_channel {
 
 struct psx_machine {
 	struct psx_cpu cpu;
+	struct psx_jit jit;
 	struct psx_gpu gpu;
 	uint8_t *ram;
 	uint16_t *vram;
@@ -51,9 +53,8 @@ struct psx_machine {
 	uint32_t cd_deadline;
 	uint8_t cd_commands[32];
 	uint32_t cd_command_count;
-	uint32_t vblank_period;
-	uint32_t next_vblank;
 	uint32_t vblanks;
+	uint32_t accelerated_instructions;
 	uint32_t dma_words;
 	uint32_t unknown_reads;
 	uint32_t unknown_writes;
@@ -69,6 +70,8 @@ void psx_machine_reset(struct psx_machine *machine, uint8_t *ram,
 	uint16_t *vram, const uint8_t *bios);
 int psx_machine_step(struct psx_machine *machine);
 int psx_machine_run(struct psx_machine *machine, uint32_t instruction_limit);
+void psx_machine_vblank(struct psx_machine *machine);
+int psx_machine_waiting_for_vblank(const struct psx_machine *machine);
 void psx_machine_copy_display(const struct psx_machine *machine,
 	volatile uint16_t *output, uint32_t output_width, uint32_t output_height);
 

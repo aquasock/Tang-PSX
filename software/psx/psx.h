@@ -43,6 +43,10 @@ struct psx_cpu {
 	struct psx_gte gte;
 	uint8_t *ram;
 	uint32_t ram_size;
+	uint32_t ram_map_size;
+	const uint8_t *bios;
+	uint32_t bios_base;
+	uint32_t bios_size;
 	psx_bus_read_fn bus_read;
 	psx_bus_write_fn bus_write;
 	void *bus_opaque;

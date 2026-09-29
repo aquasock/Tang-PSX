@@ -29,6 +29,7 @@ for name in "${programs[@]}"; do
     src="$PROJECT_ROOT/software/programs/$name"
     out="$PROJECT_ROOT/build/programs/$name"
     extra_sources=()
+    program_cflags=()
     mkdir -p "$out"
     if [[ "$name" == blob ]]; then
         python3 "$PROJECT_ROOT/tools/ae350_run.py" blob -o "$out/blob.bin"
@@ -51,8 +52,14 @@ for name in "${programs[@]}"; do
         fi
         cp "$bios" "$out/scph1001.bin"
         extra_sources=("$PROJECT_ROOT"/software/psx/*.c)
+        program_cflags=(-O3 -flto)
     fi
-    "$CC" "${CFLAGS[@]}" -I"$PROJECT_ROOT/software/psx" -I"$out" \
+    if [[ "$name" == psx_perf ]]; then
+        extra_sources=("$PROJECT_ROOT"/software/psx/*.c)
+        program_cflags=(-O3 -flto)
+    fi
+    "$CC" "${CFLAGS[@]}" "${program_cflags[@]}" \
+        -I"$PROJECT_ROOT/software/psx" -I"$out" \
         "${LDFLAGS[@]}" -Wa,-I"$out" -o "$out/$name.elf" \
         "$COMMON/crt0.S" "$src"/*.c "${extra_sources[@]}" \
         $(ls "$src"/*.S 2>/dev/null) -lgcc

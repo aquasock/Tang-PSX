@@ -804,3 +804,47 @@ Reevaluate the next milestone with the user; the recommended path is to continue
 - User Test: PASS
 
 ---
+
+## 25 COMMIT Unreleased 2026-09-28T20:12:05-07:00
+
+#### Coming From:
+
+Unreleased f0245ea
+
+#### Purpose:
+
+Measure and improve SCPH-1001 startup performance on the 750 MHz AE350, then begin the user-approved transition from the optimized interpreter to a hybrid dynamic recompiler.
+
+#### Outcome:
+
+The BIOS runner now drives VBlank from detected wait states, stops at the exact established logo checkpoint or a 30-second board-timer cutoff, publishes partial progress, and uses signature-checked accelerators plus a compact interpreter path for the measured BIOS copy, clear, SPU-copy, delay, and bitmap-search loops. A new RV32 dynamic recompiler uses a 512-entry direct-mapped block table and 128 KiB code buffer, hot-block and minimum-length admission, runtime source validation, direct integer ALU, immediate, branch, jump, delay-slot, and guarded mirrored-RAM byte, halfword, and word load/store translation, with interpreter fallback for unsupported, exceptional, BIOS, and MMIO operations. The generated-code differential passed under QEMU for ALU, control flow, load delays, RAM access, self-modifying code, fallback, invalidation, and the first-instruction guard bailout that froze the initial `b9.tpx` deployment; all 96 CPU/GTE checks and mutation detection passed, the complete program build passed, and the sanitizer-backed event-driven host BIOS checkpoint retained framebuffer SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7`. Hardware `jit4.tpx`, SHA-256 `237fca58c31b2a0411ed1e49bd73045d5733f771521cafd7bbeecf5c3dc36383` and SD CRC-32 `0x2d14c4ab`, measured the compact interpreter and JIT at approximately 6.39 versus 10.90 MIPS on a 16-instruction ALU loop and 5.35 versus 10.01 MIPS on a RAM-heavy loop, or 1.71x and 1.87x speedups, with caches enabled, one compiled block, 62,497 compiled-block executions, and 48 fallbacks. Corrected `b10.tpx`, SHA-256 `5ea6e8b4ffe7099edb7a2f791a0af7abc3cb656ad5194af6a32ff51c69574765` and SD CRC-32 `0x778cf01c`, no longer froze and returned normally at the cutoff with failure 2, 6,776 GPU words, 11 primitives, 12 uploads, 11 VBlanks, 17,913 DMA words, 153 compiled blocks, 14,416 block executions, 149,556 JIT instructions, and 1,177,534 interpreter fallbacks in the final cache generation; this was one VBlank ahead of `b8` but remained behind the optimized-interpreter `b6` result of 13 VBlanks. HDMI DMA reported no underflow, but the user saw only a black screen with corrupted pixels and ended the unsuccessful performance cycle for handoff. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry as number 25 with exactly six required sections, inspected the complete `.ai` diff, confirmed the active log remains below 100 entries, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Continue from the proven `b10` correctness baseline by preventing the small generated-code cache from repeatedly resetting and discarding hot blocks, preserving cumulative JIT statistics across cache generations, and profiling block coverage and bailout causes before adding immutable BIOS loads, indirect jumps, or a less expensive RAM-code invalidation strategy; retain `b6` as the current 30-second performance reference and the exact host framebuffer checkpoint as the correctness oracle, with the eventual target still a roughly 10-second BIOS logo boot.
+
+#### Files Modified:
+
+- scripts/build-programs.sh
+- software/programs/psx_bios/main.c
+- software/programs/psx_perf/main.c
+- software/psx/jit.c
+- software/psx/jit.h
+- software/psx/machine.c
+- software/psx/machine.h
+- software/psx/psx.h
+- software/psx/r3000.c
+- tests/psx_bios_host.c
+- tests/psx_jit_rv32.c
+- tests/psx_jit_rv32.ld
+- tests/psx_jit_rv32_start.S
+- tests/test_psx_bios.py
+- tests/test_psx_jit.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

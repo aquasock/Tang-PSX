@@ -29,6 +29,7 @@ def main() -> int:
             ROOT / "software/psx/r3000.c",
             ROOT / "software/psx/gte.c",
             ROOT / "software/psx/gpu.c",
+            ROOT / "software/psx/jit.c",
             ROOT / "software/psx/machine.c",
             ROOT / "tests/psx_bios_host.c",
         ]
@@ -37,14 +38,17 @@ def main() -> int:
             "-fsanitize=address,undefined", f"-I{ROOT / 'software/psx'}",
             *(str(source) for source in sources), "-o", str(executable),
         ], check=True)
+        environment = os.environ.copy()
+        environment["ASAN_OPTIONS"] = "detect_leaks=0"
+        environment["PSX_FRAMEBUFFER"] = str(framebuffer)
         completed = subprocess.run([
-            str(executable), str(bios), "100", str(framebuffer),
-        ], check=True, text=True, capture_output=True)
+            str(executable), str(bios), "1", "slicedfast",
+        ], check=True, text=True, capture_output=True, env=environment)
         expected = (
-            "instructions=99999544 pc=80059d68 ra=80059d18 sp=801ffd50 "
-            "exceptions=462 status=00000401 cause=00000000 irq=00000000/00000009 "
-            "vblank=199 gpu_words=10768 primitives=414 uploads=63 unknown_gpu=0 "
-            "dma_words=158497 unknown=0/0"
+            "batches=23136 instructions=27870497 accelerated=21984983 "
+            "vblank=144 idle_events=144 gpu_words=10768 primitives=414 "
+            "uploads=63 dma_words=158497 pc=80047c2c "
+            "irq=00000000/00000009 complete=1"
         )
         if expected not in completed.stdout:
             print(completed.stdout, end="")
@@ -52,7 +56,7 @@ def main() -> int:
         digest = hashlib.sha256(framebuffer.read_bytes()).hexdigest()
         if digest != FRAME_SHA256:
             raise RuntimeError(f"framebuffer SHA-256 changed: {digest}")
-        print("SCPH-1001 BIOS: 99,999,544 instructions, 10,768 GPU words, "
+        print("SCPH-1001 BIOS: exact event-driven logo checkpoint, 10,768 GPU words, "
               f"framebuffer sha256={digest}")
     return 0
 

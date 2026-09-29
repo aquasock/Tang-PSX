@@ -11,82 +11,162 @@ static int address_ptr(struct psx_cpu *cpu, uint32_t address, uint32_t bytes,
 	uint8_t **pointer)
 {
 	uint32_t physical = address & 0x1fffffffu;
+	uint32_t offset;
 
-	if (physical > cpu->ram_size || bytes > cpu->ram_size - physical)
+	if (!cpu->ram || physical >= cpu->ram_map_size)
 		return -1;
-	*pointer = &cpu->ram[physical];
+	offset = physical & (cpu->ram_size - 1u);
+	if (bytes > cpu->ram_size - offset)
+		return -1;
+	*pointer = &cpu->ram[offset];
+	return 0;
+}
+
+static int bios_ptr(const struct psx_cpu *cpu, uint32_t address,
+	uint32_t bytes, const uint8_t **pointer)
+{
+	uint32_t physical = address & 0x1fffffffu;
+	uint32_t offset;
+
+	if (!cpu->bios || physical < cpu->bios_base)
+		return -1;
+	offset = physical - cpu->bios_base;
+	if (offset >= cpu->bios_size || bytes > cpu->bios_size - offset)
+		return -1;
+	*pointer = &cpu->bios[offset];
 	return 0;
 }
 
 static int read8(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 {
 	uint8_t *p;
+	const uint8_t *rom;
+	if (!address_ptr(cpu, address, 1, &p)) {
+		*value = p[0];
+		return 0;
+	}
+	if (!bios_ptr(cpu, address, 1, &rom)) {
+		*value = rom[0];
+		return 0;
+	}
 	if (cpu->bus_read)
 		return cpu->bus_read(cpu->bus_opaque, address, 1, value);
-	if (address_ptr(cpu, address, 1, &p))
-		return -1;
-	*value = p[0];
-	return 0;
+	return -1;
 }
 
 static int read16(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 {
 	uint8_t *p;
+	const uint8_t *rom;
+	if (!address_ptr(cpu, address, 2, &p)) {
+		*value = p[0] | ((uint32_t)p[1] << 8);
+		return 0;
+	}
+	if (!bios_ptr(cpu, address, 2, &rom)) {
+		*value = rom[0] | ((uint32_t)rom[1] << 8);
+		return 0;
+	}
 	if (cpu->bus_read)
 		return cpu->bus_read(cpu->bus_opaque, address, 2, value);
-	if (address_ptr(cpu, address, 2, &p))
-		return -1;
-	*value = p[0] | ((uint32_t)p[1] << 8);
-	return 0;
+	return -1;
 }
 
 static int read32(struct psx_cpu *cpu, uint32_t address, uint32_t *value)
 {
 	uint8_t *p;
+	const uint8_t *rom;
+	if (!address_ptr(cpu, address, 4, &p)) {
+		*value = p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+			((uint32_t)p[3] << 24);
+		return 0;
+	}
+	if (!bios_ptr(cpu, address, 4, &rom)) {
+		*value = rom[0] | ((uint32_t)rom[1] << 8) |
+			((uint32_t)rom[2] << 16) | ((uint32_t)rom[3] << 24);
+		return 0;
+	}
 	if (cpu->bus_read)
 		return cpu->bus_read(cpu->bus_opaque, address, 4, value);
-	if (address_ptr(cpu, address, 4, &p))
-		return -1;
-	*value = p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-		((uint32_t)p[3] << 24);
-	return 0;
+	return -1;
+}
+
+static __attribute__((always_inline)) inline int fetch32(
+	struct psx_cpu *cpu, uint32_t address, uint32_t *value)
+{
+	uint32_t physical = address & 0x1fffffffu;
+	const uint8_t *p;
+	uint32_t offset;
+
+	if (cpu->ram && physical < cpu->ram_map_size) {
+		offset = physical & (cpu->ram_size - 1u);
+		if (offset <= cpu->ram_size - 4u) {
+			p = &cpu->ram[offset];
+			*value = p[0] | ((uint32_t)p[1] << 8) |
+				((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+			return 0;
+		}
+	}
+	if (cpu->bios && physical >= cpu->bios_base) {
+		offset = physical - cpu->bios_base;
+		if (offset <= cpu->bios_size - 4u) {
+			p = &cpu->bios[offset];
+			*value = p[0] | ((uint32_t)p[1] << 8) |
+				((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+			return 0;
+		}
+	}
+	if (cpu->bus_read)
+		return cpu->bus_read(cpu->bus_opaque, address, 4u, value);
+	return -1;
 }
 
 static int write8(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 {
 	uint8_t *p;
+	if (!address_ptr(cpu, address, 1, &p)) {
+		if (cpu->bus_write && (cpu->cp0[12] & 0x00010000u) &&
+		    (address & 0xe0000000u) != 0xa0000000u)
+			return 0;
+		p[0] = (uint8_t)value;
+		return 0;
+	}
 	if (cpu->bus_write)
 		return cpu->bus_write(cpu->bus_opaque, address, 1, value);
-	if (address_ptr(cpu, address, 1, &p))
-		return -1;
-	p[0] = (uint8_t)value;
-	return 0;
+	return -1;
 }
 
 static int write16(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 {
 	uint8_t *p;
+	if (!address_ptr(cpu, address, 2, &p)) {
+		if (cpu->bus_write && (cpu->cp0[12] & 0x00010000u) &&
+		    (address & 0xe0000000u) != 0xa0000000u)
+			return 0;
+		p[0] = (uint8_t)value;
+		p[1] = (uint8_t)(value >> 8);
+		return 0;
+	}
 	if (cpu->bus_write)
 		return cpu->bus_write(cpu->bus_opaque, address, 2, value);
-	if (address_ptr(cpu, address, 2, &p))
-		return -1;
-	p[0] = (uint8_t)value;
-	p[1] = (uint8_t)(value >> 8);
-	return 0;
+	return -1;
 }
 
 static int write32(struct psx_cpu *cpu, uint32_t address, uint32_t value)
 {
 	uint8_t *p;
+	if (!address_ptr(cpu, address, 4, &p)) {
+		if (cpu->bus_write && (cpu->cp0[12] & 0x00010000u) &&
+		    (address & 0xe0000000u) != 0xa0000000u)
+			return 0;
+		p[0] = (uint8_t)value;
+		p[1] = (uint8_t)(value >> 8);
+		p[2] = (uint8_t)(value >> 16);
+		p[3] = (uint8_t)(value >> 24);
+		return 0;
+	}
 	if (cpu->bus_write)
 		return cpu->bus_write(cpu->bus_opaque, address, 4, value);
-	if (address_ptr(cpu, address, 4, &p))
-		return -1;
-	p[0] = (uint8_t)value;
-	p[1] = (uint8_t)(value >> 8);
-	p[2] = (uint8_t)(value >> 16);
-	p[3] = (uint8_t)(value >> 24);
-	return 0;
+	return -1;
 }
 
 static void write_reg(struct psx_cpu *cpu, uint32_t reg, uint32_t value,
@@ -359,6 +439,10 @@ void psx_cpu_reset(struct psx_cpu *cpu, uint8_t *ram, uint32_t ram_size,
 	cpu->next_pc = pc + 4u;
 	cpu->ram = ram;
 	cpu->ram_size = ram_size;
+	cpu->ram_map_size = ram_size;
+	cpu->bios = 0;
+	cpu->bios_base = 0;
+	cpu->bios_size = 0;
 	cpu->bus_read = 0;
 	cpu->bus_write = 0;
 	cpu->bus_opaque = 0;
@@ -382,6 +466,7 @@ void psx_cpu_reset_bus(struct psx_cpu *cpu, psx_bus_read_fn read_fn,
 	cpu->bus_opaque = opaque;
 }
 
+__attribute__((noinline))
 int psx_cpu_step(struct psx_cpu *cpu)
 {
 	uint32_t instruction;
@@ -412,7 +497,7 @@ int psx_cpu_step(struct psx_cpu *cpu)
 			current_pc, 1, 0);
 		goto finish;
 	}
-	if (read32(cpu, current_pc, &instruction)) {
+	if (fetch32(cpu, current_pc, &instruction)) {
 		result = exception(cpu, PSX_EXC_IBE, current_pc, in_delay,
 			current_pc, 0, 0);
 		goto finish;
@@ -623,15 +708,182 @@ finish:
 	return result;
 }
 
+static __attribute__((always_inline)) inline int psx_cpu_fast_step(
+	struct psx_cpu *cpu)
+{
+	uint32_t instruction;
+	uint32_t current_pc = cpu->pc;
+	uint32_t op;
+	uint32_t rs;
+	uint32_t rt;
+	uint32_t rd;
+	uint32_t fn;
+	uint32_t address = 0;
+	uint32_t value = 0;
+	uint32_t written = 0;
+	uint8_t *write_pointer = 0;
+	const uint8_t *read_pointer = 0;
+	uint32_t old_load_value;
+	uint32_t old_load_reg;
+	int old_load_pending;
+
+	if ((cpu->cp0[12] & 1u) &&
+	    (cpu->cp0[12] & cpu->cp0[13] & 0x0000ff00u))
+		return 0;
+	if ((current_pc & 3u) || fetch32(cpu, current_pc, &instruction))
+		return 0;
+	op = instruction >> 26;
+	rs = (instruction >> 21) & 31u;
+	rt = (instruction >> 16) & 31u;
+	rd = (instruction >> 11) & 31u;
+	fn = instruction & 63u;
+
+	if (op == 0u) {
+		if (fn != 0x00u && fn != 0x02u && fn != 0x03u && fn != 0x04u &&
+		    fn != 0x06u && fn != 0x07u && fn != 0x08u && fn != 0x09u &&
+		    fn != 0x21u && fn != 0x23u && fn != 0x24u && fn != 0x25u &&
+		    fn != 0x26u && fn != 0x27u && fn != 0x2au && fn != 0x2bu)
+			return 0;
+		if ((fn == 0x08u || fn == 0x09u) && (cpu->gpr[rs] & 3u))
+			return 0;
+	} else if (op == 0x01u) {
+		if (rt != 0u && rt != 1u && rt != 16u && rt != 17u)
+			return 0;
+	} else if ((op >= 0x02u && op <= 0x07u) ||
+		   (op >= 0x09u && op <= 0x0fu)) {
+		/* Fast integer control and non-trapping immediate operations. */
+	} else if (op == 0x20u || op == 0x24u || op == 0x21u ||
+		   op == 0x25u || op == 0x23u) {
+		address = cpu->gpr[rs] + sign16(instruction);
+		if ((op == 0x23u && (address & 3u)) ||
+		    ((op == 0x21u || op == 0x25u) && (address & 1u)))
+			return 0;
+		if (!address_ptr(cpu, address, op == 0x23u ? 4u :
+		    ((op == 0x21u || op == 0x25u) ? 2u : 1u), &write_pointer)) {
+			read_pointer = write_pointer;
+		} else if (bios_ptr(cpu, address, op == 0x23u ? 4u :
+			   ((op == 0x21u || op == 0x25u) ? 2u : 1u),
+			   &read_pointer)) {
+			return 0;
+		}
+	} else if (op == 0x28u || op == 0x29u || op == 0x2bu) {
+		address = cpu->gpr[rs] + sign16(instruction);
+		if ((op == 0x29u && (address & 1u)) ||
+		    (op == 0x2bu && (address & 3u)) ||
+		    address_ptr(cpu, address, op == 0x2bu ? 4u :
+			(op == 0x29u ? 2u : 1u), &write_pointer))
+			return 0;
+	} else {
+		return 0;
+	}
+
+	old_load_value = cpu->load_value;
+	old_load_reg = cpu->load_reg;
+	old_load_pending = cpu->load_pending;
+	cpu->load_pending = 0;
+	cpu->in_delay_slot = 0;
+	cpu->pc = cpu->next_pc;
+	cpu->next_pc += 4u;
+	++cpu->cycles;
+
+	if (op == 0u) {
+		uint32_t sa = (instruction >> 6) & 31u;
+		switch (fn) {
+		case 0x00: value = cpu->gpr[rt] << sa; break;
+		case 0x02: value = cpu->gpr[rt] >> sa; break;
+		case 0x03: value = (uint32_t)((int32_t)cpu->gpr[rt] >> sa); break;
+		case 0x04: value = cpu->gpr[rt] << (cpu->gpr[rs] & 31u); break;
+		case 0x06: value = cpu->gpr[rt] >> (cpu->gpr[rs] & 31u); break;
+		case 0x07: value = (uint32_t)((int32_t)cpu->gpr[rt] >>
+			(cpu->gpr[rs] & 31u)); break;
+		case 0x08: branch(cpu, current_pc, cpu->gpr[rs], 1); break;
+		case 0x09:
+			value = cpu->gpr[rs];
+			write_reg(cpu, rd, current_pc + 8u, &written);
+			branch(cpu, current_pc, value, 1);
+			break;
+		case 0x21: value = cpu->gpr[rs] + cpu->gpr[rt]; break;
+		case 0x23: value = cpu->gpr[rs] - cpu->gpr[rt]; break;
+		case 0x24: value = cpu->gpr[rs] & cpu->gpr[rt]; break;
+		case 0x25: value = cpu->gpr[rs] | cpu->gpr[rt]; break;
+		case 0x26: value = cpu->gpr[rs] ^ cpu->gpr[rt]; break;
+		case 0x27: value = ~(cpu->gpr[rs] | cpu->gpr[rt]); break;
+		case 0x2a: value = (int32_t)cpu->gpr[rs] < (int32_t)cpu->gpr[rt]; break;
+		default: value = cpu->gpr[rs] < cpu->gpr[rt]; break;
+		}
+		if (fn != 0x08u && fn != 0x09u)
+			write_reg(cpu, rd, value, &written);
+	} else if (op == 0x01u) {
+		int condition = (rt & 1u) ? (int32_t)cpu->gpr[rs] >= 0 :
+			(int32_t)cpu->gpr[rs] < 0;
+		if (rt & 16u)
+			write_reg(cpu, 31u, current_pc + 8u, &written);
+		branch(cpu, current_pc, current_pc + 4u +
+			(sign16(instruction) << 2), condition);
+	} else if (op == 0x02u || op == 0x03u) {
+		if (op == 0x03u)
+			write_reg(cpu, 31u, current_pc + 8u, &written);
+		branch(cpu, current_pc, (cpu->pc & 0xf0000000u) |
+			((instruction & 0x03ffffffu) << 2), 1);
+	} else if (op >= 0x04u && op <= 0x07u) {
+		int condition = op == 0x04u ? cpu->gpr[rs] == cpu->gpr[rt] :
+			(op == 0x05u ? cpu->gpr[rs] != cpu->gpr[rt] :
+			 (op == 0x06u ? (int32_t)cpu->gpr[rs] <= 0 :
+			  (int32_t)cpu->gpr[rs] > 0));
+		branch(cpu, current_pc, current_pc + 4u +
+			(sign16(instruction) << 2), condition);
+	} else if (op >= 0x09u && op <= 0x0fu) {
+		switch (op) {
+		case 0x09: value = cpu->gpr[rs] + sign16(instruction); break;
+		case 0x0a: value = (int32_t)cpu->gpr[rs] <
+			(int32_t)sign16(instruction); break;
+		case 0x0b: value = cpu->gpr[rs] < sign16(instruction); break;
+		case 0x0c: value = cpu->gpr[rs] & (instruction & 0xffffu); break;
+		case 0x0d: value = cpu->gpr[rs] | (instruction & 0xffffu); break;
+		case 0x0e: value = cpu->gpr[rs] ^ (instruction & 0xffffu); break;
+		default: value = instruction << 16; break;
+		}
+		write_reg(cpu, rt, value, &written);
+	} else if (op == 0x20u || op == 0x24u || op == 0x21u ||
+		   op == 0x25u || op == 0x23u) {
+		value = read_pointer[0];
+		if (op == 0x21u || op == 0x25u || op == 0x23u)
+			value |= (uint32_t)read_pointer[1] << 8;
+		if (op == 0x23u)
+			value |= (uint32_t)read_pointer[2] << 16 |
+				(uint32_t)read_pointer[3] << 24;
+		if (op == 0x20u)
+			value = (uint32_t)(int32_t)(int8_t)value;
+		else if (op == 0x21u)
+			value = (uint32_t)(int32_t)(int16_t)value;
+		delayed_load(cpu, rt, value);
+	} else if (!cpu->bus_write || !(cpu->cp0[12] & 0x00010000u) ||
+		   (address & 0xe0000000u) == 0xa0000000u) {
+		write_pointer[0] = (uint8_t)cpu->gpr[rt];
+		if (op == 0x29u || op == 0x2bu)
+			write_pointer[1] = (uint8_t)(cpu->gpr[rt] >> 8);
+		if (op == 0x2bu) {
+			write_pointer[2] = (uint8_t)(cpu->gpr[rt] >> 16);
+			write_pointer[3] = (uint8_t)(cpu->gpr[rt] >> 24);
+		}
+	}
+
+	if (old_load_pending && old_load_reg != 0u &&
+	    !(written & (1u << old_load_reg)))
+		cpu->gpr[old_load_reg] = old_load_value;
+	cpu->gpr[0] = 0;
+	return 1;
+}
+
 int psx_cpu_run(struct psx_cpu *cpu, uint32_t instruction_limit)
 {
 	uint32_t i;
-	int result;
+	int result = 0;
 
 	for (i = 0; i < instruction_limit; ++i) {
-		result = psx_cpu_step(cpu);
-		if (result)
-			return result;
+		int step_result = psx_cpu_fast_step(cpu) ? 0 : psx_cpu_step(cpu);
+		if (step_result)
+			result = step_result;
 	}
-	return 0;
+	return result;
 }
