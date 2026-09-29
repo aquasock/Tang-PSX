@@ -15,6 +15,8 @@ by tests/test_lightning_rv32.py (check suite under qemu-riscv32/64).
 - jit_riscv-sz.c: RV32 instruction-size table.
 - jit_fallback.c: little-endian 32-bit unldi_x/unsti_x used the high word as
   the lower-address word of the movr_ww_d/movr_d_ww pair (doc/body.texi).
+- lightning.c: without HAVE_MMAP, jit_emit returns NULL when the user code
+  buffer is too small, instead of retrying the same emission forever.
 
 This patch is licensed under the GNU LGPL, version 3 or later, as GNU
 Lightning is.
@@ -1517,3 +1519,28 @@ index c787efb..8c94ac2 100644
  
      /* Make sure functions called have a 16 byte aligned stack */
      _jitc->framesize = (_jitc->framesize + 15) & -16;
+diff --git a/lib/lightning.c b/lib/lightning.c
+index 656e5f7..92dd1ed 100644
+--- a/lib/lightning.c
++++ b/lib/lightning.c
+@@ -2553,7 +2553,9 @@ _jit_emit(jit_state_t *_jit)
+ 		    node->flag &= ~jit_flag_patch;
+ 	    }
+ #if !HAVE_MMAP
++	    /* The user code buffer is too small: retrying cannot succeed. */
+ 	    assert(_jit->user_code);
++	    goto fail;
+ #else
+ 	    if (_jit->user_code)
+ 		goto fail;
+@@ -2628,10 +2630,8 @@ _jit_emit(jit_state_t *_jit)
+ 
+     return (_jit->code.ptr);
+ 
+-#if HAVE_MMAP
+ fail:
+     return (NULL);
+-#endif /* HAVE_MMAP */
+ }
+ 
+ void

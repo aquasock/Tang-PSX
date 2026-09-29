@@ -1116,3 +1116,45 @@ With the user's go-ahead, start step 2 of the approved Lightrec plan as recorded
 - User Test: N/A
 
 ---
+
+## 33 COMMIT Unreleased 2026-09-29T11:12:26-07:00
+
+#### Coming From:
+
+Unreleased cd2cf2a
+
+#### Purpose:
+
+Build Lightrec bare-metal for the AE350 and connect it to the Tang-PSX machine as its R3000A core under qemu-riscv32, completing phases 1 to 3 of step 2 of the approved Lightrec plan.
+
+#### Outcome:
+
+Phase 1 builds Lightrec (`a7464cc`, unmodified) and the patched GNU Lightning as `liblightrec.a` for `rv32imafdc` `ilp32` with `tools/lightrec_build.py`, in about 3 s. The build uses the static `software/lightrec/lightrec-config.h` (no threaded compiler, TLSF-managed caller code buffer, upstream optimization defaults) and Lightning with `HAVE_MMAP=0`. Programs link it with newlib-nano and `software/lightrec/runtime.c`, which supplies the system calls over a static heap, `sysconf` for Lightning's cache flush, and two platform hooks for output and exit. `third_party/patches/gnu-lightning-rv32.patch` gains one `lib/lightning.c` fix: without mmap, `jit_emit` retried a too-small user code buffer forever and now returns NULL. The Lightning check suite still passes 145, 145, and 142 of 145 with the three expected failures, and `tests/lightrec_smoke_rv32.c` confirms that the small buffer is rejected and that Lightrec runs a MIPS program correctly when compiled and when interpreted. Phase 2 connects Lightrec through `software/lightrec/psx_lightrec.c`. RAM with three mirrors, BIOS, and scratchpad are direct maps, and I/O, the parallel port, and cache control go through the machine bus, which `software/psx/machine.c` now exports with device servicing and a RAM-write hook that invalidates code after DMA. GTE commands run on Lightrec's registers, whose layout matches `struct psx_gte`. After each run the machine's CPU state mirrors Lightrec's registers, so the event-driven VBlank detection works unchanged. The BIOS, whose cache-isolated stores all fell within the first 4 KiB, is covered by saving and restoring 64 KiB of low RAM around isolation. Phase 3 hardened the run loop against the directed test `tests/psx_lightrec_unit_rv32.c`, now run with the smoke test by `tests/test_lightrec_rv32.py`. That test found that an interrupt raised by an I/O write before a block-ending SYSCALL was entered after the syscall, which is now fixed. It also showed that the host must not execute a GTE command on interrupt entry, because Lightrec re-runs it on the handler's return (TOOL-010). Lightrec's counter now holds the low 31 bits of the machine cycle count, so run targets never wrap. Built natively for x86-64 as well, the test exposed two upstream Lightrec limits, left unpatched and documented in `software/lightrec/psx_lightrec.h` and TOOL-010. Cache isolation is honored only from uncached code, and a JR to a known kseg1 address from kseg0 RAM becomes a J that stays in kseg0. Under `qemu-riscv32`, `tests/psx_bios_lightrec_rv32.c` boots SCPH-1001 to the logo checkpoint with framebuffer SHA-256 `0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7`, 144 VBlanks, 10,768 GPU words, 414 primitives, 63 uploads, and 158,497 DMA words, matching the interpreter, in 0.9 s. It executes 30,182,928 guest instructions with no pattern accelerators, and the result is identical when the guest clock starts at 0, `0x7ff00000`, or `0xfff00000`. That harness has no committed runner yet. The existing `test_psx_bios`, `test_psx_bios_jit`, `test_psx_cdrom`, `test_psx_diag`, `test_psx_gpu`, `test_psx_gpu_accel`, and `test_psx_jit` tests pass (ASan tests run without `LD_PRELOAD`), and the `psx_bios`, `psx_perf`, and `psx_disc` hardware programs build. No hardware build or deployment was part of this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including TOOL-010, validated this entry as number 33 with exactly six required sections, confirmed that 33 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Complete phase 4 of step 2 by adding a committed runner for `tests/psx_bios_lightrec_rv32.c` that checks the framebuffer hash and logo telemetry at the three starting cycle counts. Then compare Lightrec with the current JIT under QEMU as step 3 of the approved plan before any hardware run. Whether to carry a Lightrec patch for the JR-to-J segment defect is for the user to decide.
+
+#### Files Modified:
+
+- software/lightrec/lightrec-config.h
+- software/lightrec/psx_lightrec.c
+- software/lightrec/psx_lightrec.h
+- software/lightrec/runtime.c
+- software/lightrec/runtime.h
+- software/psx/machine.c
+- software/psx/machine.h
+- tests/lightrec_smoke_rv32.c
+- tests/psx_bios_lightrec_rv32.c
+- tests/psx_lightrec_unit_rv32.c
+- tests/test_lightrec_rv32.py
+- third_party/patches/gnu-lightning-rv32.patch
+- tools/lightrec_build.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

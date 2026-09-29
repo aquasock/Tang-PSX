@@ -74,6 +74,8 @@ static void ram_write32(struct psx_machine *machine, uint32_t address,
 {
 	uint32_t offset = address & (PSX_MAIN_RAM_BYTES - 1u);
 	store_le(&machine->ram[offset], 4, value);
+	if (machine->ram_write_hook)
+		machine->ram_write_hook(machine->ram_write_opaque, offset);
 }
 
 static void update_dma_irq(struct psx_machine *machine)
@@ -431,6 +433,9 @@ static int bus_write(void *opaque, uint32_t address, uint32_t bytes,
 		    (address & 0xe0000000u) != 0xa0000000u)
 			return 0;
 		store_le(&machine->ram[offset], bytes, value);
+		if (machine->ram_write_hook)
+			machine->ram_write_hook(machine->ram_write_opaque,
+				offset & ~3u);
 		return 0;
 	}
 	if (physical >= 0x1f800000u && physical < 0x1f800400u) {
@@ -455,6 +460,23 @@ static int bus_write(void *opaque, uint32_t address, uint32_t bytes,
 	++machine->unknown_writes;
 	machine->last_unknown_write = address;
 	return 0;
+}
+
+int psx_machine_read(struct psx_machine *machine, uint32_t address,
+	uint32_t bytes, uint32_t *value)
+{
+	return bus_read(machine, address, bytes, value);
+}
+
+int psx_machine_write(struct psx_machine *machine, uint32_t address,
+	uint32_t bytes, uint32_t value)
+{
+	return bus_write(machine, address, bytes, value);
+}
+
+void psx_machine_service(struct psx_machine *machine)
+{
+	cd_service(machine);
 }
 
 static void update_interrupts(struct psx_machine *machine)

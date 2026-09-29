@@ -62,6 +62,12 @@ struct psx_machine {
 	uint64_t profile_cpu_cycles;
 	uint64_t profile_accel_cycles;
 	uint64_t profile_gpu_cycles;
+	/*
+	 * Optional, set after reset: told of each RAM word the machine itself
+	 * writes (DMA, accelerated copies) so a recompiler can drop stale code.
+	 */
+	void (*ram_write_hook)(void *opaque, uint32_t offset);
+	void *ram_write_opaque;
 };
 
 void psx_machine_reset(struct psx_machine *machine, uint8_t *ram,
@@ -79,6 +85,16 @@ void psx_machine_vblank(struct psx_machine *machine);
  */
 void psx_machine_idle_to(struct psx_machine *machine, uint32_t cycles);
 int psx_machine_waiting_for_vblank(const struct psx_machine *machine);
+/*
+ * Guest bus access and device servicing for an external CPU core (Lightrec).
+ * The bus functions take any segment address; service delivers the CD-ROM
+ * and controller events due at cpu.cycles.
+ */
+int psx_machine_read(struct psx_machine *machine, uint32_t address,
+	uint32_t bytes, uint32_t *value);
+int psx_machine_write(struct psx_machine *machine, uint32_t address,
+	uint32_t bytes, uint32_t value);
+void psx_machine_service(struct psx_machine *machine);
 void psx_machine_copy_display(const struct psx_machine *machine,
 	volatile uint16_t *output, uint32_t output_width, uint32_t output_height);
 

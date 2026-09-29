@@ -125,6 +125,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Which Gowin place-and-route options can change timing closure? | TOOL | TOOL-007 |
 | Can GNU Lightning / Lightrec generate RV32 code? | TOOL | TOOL-008 |
 | How does ilp32d pass doubles in integer registers and on the stack? | TOOL | TOOL-009 |
+| What does Lightrec expect of its host for interrupts, the GTE, cache isolation, and cycles? | TOOL | TOOL-010 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
@@ -171,6 +172,7 @@ TOOL-006: "LiteDRAMWishbone2Native's narrow-to-wide burst path compares full add
 TOOL-007: "SUG100 section 8.3: set_option -place_option 0-4, -route_option 0-2 select placement and routing algorithms; -replicate_resources 1 replicates high-fanout logic"
 TOOL-008: "Upstream GNU Lightning's RISC-V backend is RV64-only; Tang-PSX's RV32 port is third_party/patches/gnu-lightning-rv32.patch; ww/d pairs are in memory order"
 TOOL-009: "ilp32d doubles: fa0-fa7, then a GPR pair, a7+stack split, or an 8-aligned stack slot; variadic doubles use even GPR pairs and never split"
+TOOL-010: "Lightrec exits only on block ends; JR/RFE re-runs a GTE command at EPC; cache isolation only from uncached code; JR-to-J keeps the caller's segment"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
@@ -548,6 +550,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
   sources:
     - "riscv64-unknown-elf-gcc 10.2.0 (Xuantie-900 elf newlib Toolchain V2.6.1 B-20220906) assembly output for calls with 8 doubles plus 7 or 9 ints plus a double, and printf with an int and a double"
   verification: "Read from the compiler's generated assembly on 2026-09-29, and confirmed when Lightning's ccall, carg, and cva_list checks passed against GCC-compiled C under qemu-riscv32 with ilp32d (core-log entry 31). The RISC-V ELF psABI document itself was not consulted."
+
+- record_id: TOOL-010
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "Lightrec host contract for interrupts, GTE, cache isolation, and cycles"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "At Lightrec commit a7464ccc65c5 (upstream HEAD on 2026-09-29): lightrec_set_exit_flags sets target_cycle to current_cycle, so compiled code leaves at the end of the current block, not after the calling instruction. Interrupts are therefore expected on block boundaries, never right after a GTE command; interpreter.c int_delay_slot moves a JR/JALR whose delay slot is RFE back by one instruction when EPC holds a COP2 opcode and the return address is EPC + 4, so the GTE command then runs once, and the optimizer (lightrec_detect_impossible_branches) always interprets such branches. emitter.c rec_mtc0 calls the enable_ram callback for Status bit 16 only when the block does not run from RAM through kuseg or kseg0 (block_uses_icache); code there is assumed never to isolate the cache. optimizer.c converts a JR to a known target into a J when the kunseg addresses share their top four bits, and J keeps the block's own segment, so a known jump from kseg0 RAM into kseg1 stays in kseg0. emitter.c rec_special_SYSCALL notes as a TODO that a SYSCALL in a delay slot is not handled. The cycle counter and target are 32-bit, lightrec_execute replaces a target below the current count with UINT_MAX, and the block cache ages blocks by the wrapped difference of the counter."
+  consequence: "software/lightrec/psx_lightrec.c does not execute the GTE command on interrupt entry, takes an interrupt raised in a block before a SYSCALL or BREAK that ends it, keeps Lightrec's counter to the low 31 bits of the machine count, and documents the cache-isolation and JR-to-J limits; tests/psx_lightrec_unit_rv32.c reaches kseg1 through a loaded address."
+  sources:
+    - "Lightrec commit a7464ccc65c5360897ff6814d9707968f34a1d2b (third_party/lightrec): lightrec.c lightrec_set_exit_flags, lightrec_execute, lightrec_mtc0; interpreter.c int_delay_slot; emitter.c rec_mtc0, block_uses_icache, rec_special_SYSCALL; optimizer.c lightrec_transform_ops (Convert JR to J), lightrec_detect_impossible_branches; blockcache.c lightrec_block_is_old"
+  verification: "tests/psx_lightrec_unit_rv32.c under qemu-riscv32 and built natively for x86-64 showed the GTE command running twice when the host also executed it on interrupt entry, an isolated store reaching RAM from kseg0 code, and a constant JR to kseg1 continuing at the kseg0 address (core-log entry 33)."
 
 - record_id: TOOL-001
   kind: TOOLCHAIN
