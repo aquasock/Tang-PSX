@@ -83,92 +83,22 @@ static void update_dma_irq(struct psx_machine *machine)
 	uint32_t active = (machine->dma_interrupt & (1u << 15)) ||
 		((machine->dma_interrupt & (1u << 23)) && (pending & enabled));
 	if (active) {
+		/* I_STAT bit 3 follows the rising edge of the master flag. */
+		if (!(machine->dma_interrupt & (1u << 31)))
+			machine->irq_status |= 1u << 3;
 		machine->dma_interrupt |= 1u << 31;
-		machine->irq_status |= 1u << 3;
 	} else {
 		machine->dma_interrupt &= ~(1u << 31);
 	}
 }
 
-static void cd_set_response(struct psx_machine *machine, uint8_t interrupt,
-	const uint8_t *response, uint32_t count)
-{
-	uint32_t i;
-	machine->cd_response_read = 0;
-	machine->cd_response_count = (uint8_t)count;
-	for (i = 0; i < count; ++i)
-		machine->cd_response[i] = response[i];
-	machine->cd_irq_flag = interrupt;
-	if (machine->cd_irq_enable & (1u << (interrupt - 1u)))
-		machine->irq_status |= 1u << 2;
-}
-
-static int cd_has_second_stage(uint8_t command)
-{
-	return command == 0x07u || command == 0x08u || command == 0x09u ||
-		command == 0x0au || command == 0x12u || command == 0x15u ||
-		command == 0x16u || command == 0x1au || command == 0x1eu;
-}
-
-static void cd_complete_command(struct psx_machine *machine)
-{
-	uint8_t response[8];
-	uint32_t count = 1;
-	uint8_t interrupt = machine->cd_pending_stage == 2u ? 2u : 3u;
-	uint8_t command = machine->cd_pending_command;
-
-	response[0] = machine->cd_drive_status;
-	if (machine->cd_pending_stage == 2u && command == 0x1au) {
-		/* No disc: GetID's second response is an INT5 error. */
-		response[1] = 0x80u;
-		count = 2;
-		interrupt = 5;
-	} else if (command == 0x0fu) {
-		response[1] = machine->cd_mode;
-		response[2] = 0;
-		response[3] = 0;
-		count = 4;
-	} else if (command == 0x13u) {
-		response[1] = 1;
-		response[2] = 1;
-		count = 3;
-	} else if (command == 0x14u) {
-		response[1] = 0;
-		response[2] = 2;
-		count = 3;
-	} else if (command == 0x19u && machine->cd_parameter_count != 0u &&
-		   machine->cd_parameters[0] == 0x20u) {
-		response[0] = 0x94u;
-		response[1] = 0x09u;
-		response[2] = 0x19u;
-		response[3] = 0xc0u;
-		count = 4;
-	}
-	if (command == 0x0eu && machine->cd_parameter_count != 0u)
-		machine->cd_mode = machine->cd_parameters[0];
-	cd_set_response(machine, interrupt, response, count);
-	if (machine->cd_pending_stage == 1u && cd_has_second_stage(command)) {
-		machine->cd_pending_stage = 2;
-		machine->cd_deadline = machine->cpu.cycles + 2000u;
-	} else {
-		machine->cd_pending_stage = 0;
-	}
-}
-
-static void cd_start_command(struct psx_machine *machine, uint8_t command)
-{
-	machine->cd_commands[machine->cd_command_count & 31u] = command;
-	++machine->cd_command_count;
-	machine->cd_pending_command = command;
-	machine->cd_pending_stage = 1;
-	machine->cd_deadline = machine->cpu.cycles + 200u;
-}
-
+/* CD-ROM (IRQ2) and controller port (IRQ7) events. */
 static void cd_service(struct psx_machine *machine)
 {
-	if (machine->cd_pending_stage != 0u && machine->cd_irq_flag == 0u &&
-	    (int32_t)(machine->cpu.cycles - machine->cd_deadline) >= 0)
-		cd_complete_command(machine);
+	if (psx_cdrom_service(&machine->cdrom, machine->cpu.cycles))
+		machine->irq_status |= 1u << 2;
+	if (psx_sio_service(&machine->sio, machine->cpu.cycles))
+		machine->irq_status |= 1u << 7;
 }
 
 static void complete_dma(struct psx_machine *machine, uint32_t channel)
@@ -244,6 +174,26 @@ static void run_dma_otc(struct psx_machine *machine)
 	complete_dma(machine, 6);
 }
 
+static void run_dma_cdrom(struct psx_machine *machine)
+{
+	struct psx_dma_channel *dma = &machine->dma[3];
+	uint32_t address = dma->base & 0x1ffffcu;
+	uint32_t sync = (dma->control >> 9) & 3u;
+	uint32_t words = sync == 0u ? (dma->block & 0xffffu) :
+		(dma->block & 0xffffu) * (dma->block >> 16);
+	uint32_t n;
+
+	if (words == 0u)
+		words = 0x10000u;
+	for (n = 0; n < words; ++n) {
+		ram_write32(machine, address, psx_cdrom_dma_word(&machine->cdrom));
+		address = (address + 4u) & 0x1ffffcu;
+	}
+	machine->dma_words += words;
+	dma->base = address;
+	complete_dma(machine, 3);
+}
+
 static void start_dma(struct psx_machine *machine, uint32_t channel)
 {
 	uint32_t control = machine->dma[channel].control;
@@ -252,10 +202,13 @@ static void start_dma(struct psx_machine *machine, uint32_t channel)
 		return;
 	if (sync == 0u && !(control & (1u << 28)))
 		return;
+	++machine->dma_starts[channel];
 	if (channel == 2u) {
 		uint64_t start = profile_cycle();
 		run_dma_gpu(machine);
 		machine->profile_gpu_cycles += profile_cycle() - start;
+	} else if (channel == 3u) {
+		run_dma_cdrom(machine);
 	} else if (channel == 6u) {
 		run_dma_otc(machine);
 	} else {
@@ -293,27 +246,19 @@ static uint32_t read_io(struct psx_machine *machine, uint32_t address,
 		if (reg == 0u) value = machine->cpu.cycles & 0xffffu;
 		else if (reg == 1u) value = machine->timer_mode[timer];
 		else if (reg == 2u) value = machine->timer_target[timer];
-	} else if (aligned == 0x1f801040u)
-		value = 0xffu;
-	else if (aligned == 0x1f801044u)
-		value = 5u;
-	else if (aligned == 0x1f801810u)
+	} else if (address >= 0x1f801040u && address < 0x1f801050u) {
+		return psx_sio_read(&machine->sio, address, bytes);
+	} else if (aligned == 0x1f801810u)
 		value = psx_gpu_read_data(&machine->gpu);
 	else if (aligned == 0x1f801814u)
 		value = psx_gpu_read_status(&machine->gpu);
 	else if (address >= 0x1f801800u && address < 0x1f801804u) {
-		if (address == 0x1f801800u) {
-			value = machine->cd_index | 0x18u;
-			if (machine->cd_response_read < machine->cd_response_count)
-				value |= 1u << 5;
-		} else if (address == 0x1f801801u) {
-			if (machine->cd_response_read < machine->cd_response_count)
-				value = machine->cd_response[machine->cd_response_read++];
-		} else if (address == 0x1f801803u) {
-			value = machine->cd_index == 0u ?
-				(machine->cd_irq_enable | 0xe0u) :
-				(machine->cd_irq_flag | 0xe0u);
-		}
+		/* Byte-wide registers; wider reads repeat the addressed port. */
+		value = psx_cdrom_read(&machine->cdrom, address,
+			machine->cpu.cycles);
+		if (bytes >= 2u)
+			value |= (uint32_t)psx_cdrom_read(&machine->cdrom,
+				address, machine->cpu.cycles) << 8;
 		return value;
 	}
 	else if (aligned == 0x1f801824u)
@@ -398,29 +343,17 @@ static void write_io(struct psx_machine *machine, uint32_t address,
 				~(0xffu << shift)) | ((value & 0xffu) << shift));
 		}
 	} else if (address >= 0x1f801800u && address < 0x1f801804u) {
-		if (address == 0x1f801800u) {
-			machine->cd_index = (uint8_t)value & 3u;
-		} else if (address == 0x1f801801u && machine->cd_index == 0u) {
-			cd_start_command(machine, (uint8_t)value);
-		} else if (address == 0x1f801802u && machine->cd_index == 0u) {
-			if (machine->cd_parameter_count < 16u)
-				machine->cd_parameters[machine->cd_parameter_count++] =
-					(uint8_t)value;
-		} else if (address == 0x1f801802u && machine->cd_index == 1u) {
-			machine->cd_irq_enable = (uint8_t)value & 0x1fu;
-			if (machine->cd_irq_flag != 0u &&
-			    (machine->cd_irq_enable &
-			     (1u << (machine->cd_irq_flag - 1u))))
-				machine->irq_status |= 1u << 2;
-		} else if (address == 0x1f801803u && machine->cd_index == 1u) {
-			machine->cd_irq_flag &= ~((uint8_t)value & 0x1fu);
-			if (value & 0x40u)
-				machine->cd_parameter_count = 0;
-			machine->irq_status &= ~(1u << 2);
-		}
-	} else if ((address >= 0x1f801040u && address < 0x1f801050u) ||
-		   aligned == 0x1f801820u) {
-		/* Serial and MDEC command writes are accepted for now. */
+		uint8_t line = machine->cdrom.irq_line;
+		psx_cdrom_write(&machine->cdrom, address, (uint8_t)value,
+			machine->cpu.cycles);
+		if (!line && machine->cdrom.irq_line)
+			machine->irq_status |= 1u << 2;
+	} else if (address >= 0x1f801040u && address < 0x1f801050u) {
+		psx_sio_write(&machine->sio, address, bytes, value,
+			machine->cpu.cycles);
+	} else if (aligned == 0x1f801820u || aligned == 0x1f801824u) {
+		/* MDEC is not emulated yet; count the attempts. */
+		++machine->mdec_accesses;
 	} else if (address == 0x1f802041u || address == 0x1f802042u) {
 		machine->bios_trace[machine->bios_trace_count & 31u] =
 			(uint8_t)value;
@@ -1009,7 +942,8 @@ void psx_machine_reset(struct psx_machine *machine, uint8_t *ram,
 	machine->bios = bios;
 	machine->ram_size = 0x00000b88u;
 	machine->dma_control = 0x07654321u;
-	machine->cd_drive_status = 0x10u;
+	psx_cdrom_reset(&machine->cdrom, 0);
+	psx_sio_reset(&machine->sio);
 	psx_gpu_reset(&machine->gpu, vram);
 	psx_cpu_reset_bus(&machine->cpu, bus_read, bus_write, machine,
 		0xbfc00000u);
@@ -1024,6 +958,12 @@ void psx_machine_reset(struct psx_machine *machine, uint8_t *ram,
 	machine->cpu.cp0[15] = 2u;
 }
 
+void psx_machine_insert_disc(struct psx_machine *machine,
+	const struct psx_disc *disc)
+{
+	psx_cdrom_reset(&machine->cdrom, disc);
+}
+
 int psx_machine_step(struct psx_machine *machine)
 {
 	int result;
@@ -1035,6 +975,14 @@ int psx_machine_step(struct psx_machine *machine)
 	result = psx_cpu_step(&machine->cpu);
 	cd_service(machine);
 	return result;
+}
+
+void psx_machine_idle_to(struct psx_machine *machine, uint32_t cycles)
+{
+	if ((int32_t)(cycles - machine->cpu.cycles) > 0)
+		machine->cpu.cycles = cycles;
+	update_interrupts(machine);
+	cd_service(machine);
 }
 
 void psx_machine_vblank(struct psx_machine *machine)
@@ -1129,19 +1077,25 @@ void psx_machine_copy_display(const struct psx_machine *machine,
 {
 	uint32_t source_width = machine->gpu.display_width;
 	uint32_t source_height = machine->gpu.display_height;
+	uint16_t columns[1024];
+	uint32_t x;
 	uint32_t y;
 	if (source_width == 0u || source_width > PSX_VRAM_WIDTH)
 		source_width = 320u;
 	if (source_height == 0u || source_height > PSX_VRAM_HEIGHT)
 		source_height = 240u;
+	if (output_width > 1024u)
+		output_width = 1024u;
+	/* Source column for each output pixel, computed once per frame. */
+	for (x = 0; x < output_width; ++x)
+		columns[x] = (uint16_t)((machine->gpu.display_x +
+			x * source_width / output_width) & 1023u);
 	for (y = 0; y < output_height; ++y) {
 		uint32_t source_y = (machine->gpu.display_y +
 			y * source_height / output_height) & 511u;
-		uint32_t x;
+		const uint16_t *row = &machine->vram[source_y * 1024u];
 		for (x = 0; x < output_width; ++x) {
-			uint32_t source_x = (machine->gpu.display_x +
-				x * source_width / output_width) & 1023u;
-			uint16_t bgr = machine->vram[source_y * 1024u + source_x];
+			uint16_t bgr = row[columns[x]];
 			output[y * output_width + x] = (uint16_t)(
 				((bgr & 0x001fu) << 11) |
 				((bgr & 0x03e0u) << 1) |

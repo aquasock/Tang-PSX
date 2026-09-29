@@ -17,7 +17,7 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | Address | Meaning |
 | --- | --- |
 | `0x00` | Magic `0x54505831` (`TPX1`) |
-| `0x04` | ABI version (`0x00020001`) |
+| `0x04` | ABI version (`0x00020002`) |
 | `0x08` | Firmware stage; bit 31 means complete |
 | `0x0c` | Failure code; zero means no detected failure |
 | `0x10` | Number of DDR words verified |
@@ -44,6 +44,10 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | `0xec` | Tang-Control stream cancel count |
 | `0xf0` | Sticky stream-event overflow flag |
 | `0xf4` | Video status: bit 0 DMA enabled, bit 1 sticky scanout underflow |
+| `0x200` | Disc request sequence, advanced by firmware for each request |
+| `0x204` | Disc request byte offset in the `.bin` image |
+| `0x208` | Disc request byte length |
+| `0x20c` | Disc size in 2352-byte sectors; written by Tang-Control, 0 = no disc |
 
 Writing bit 0 to debug address `0x100` resets the AE350 for 31 system-clock
 cycles. The FPGA stream receiver and its counters remain active across this
@@ -95,6 +99,14 @@ stream length, and CRC, writes back and invalidates the D-cache, executes
 `fence.i`, and calls the entry point with the API in
 `software/common/tpx_api.h`. A returning program publishes its 32-bit result
 at debug address `0xdc` and the loader waits for another image.
+
+Loader API version 2 adds disc access. `disc_request(offset, length)` writes
+the byte range to the mailbox at debug addresses `0x204`/`0x208` and then
+advances the sequence at `0x200`. Tang-Control's `tangpsx_disc` service polls
+the mailbox while Gate 1 is loaded and answers each new sequence with one stream
+session of that range, which `stream_read` returns entry by entry without
+blocking. `disc_sectors` reports the size of the disc Tang-Control publishes:
+the `.bin` named by the first `.cue` file in the SD-card root.
 
 Build the example programs and simulate the clock-domain-crossing receiver:
 
@@ -203,6 +215,39 @@ The last boots the BIOS to the logo through the real RV32 JIT under
 `qemu-riscv32` and requires the host checkpoint's telemetry and framebuffer
 exactly. Because the service loop is event driven, its JIT statistics are the
 ones the AE350 produces.
+
+## Booting a disc
+
+`psx_disc.tpx` boots the BIOS with the disc image on the SD card. Put a
+`.cue`/`.bin` pair (one 2352-byte data track) in the card's root, load Gate 1,
+and run it:
+
+```sh
+PSX_BIOS=/path/to/scph1001.bin scripts/build-programs.sh psx_disc
+python3 tools/ae350_run.py upload build/programs/psx_disc/psx_disc.tpx
+# Load Gate 1 before running this command.
+python3 tools/ae350_run.py run psx_disc.tpx --reset --timeout 120
+```
+
+The program requests 32-sector windows through the loader's disc API and
+reads ahead one window. VBlank runs at 60 Hz of emulated time, and while the
+CPU only waits for it the machine clock skips ahead to the next frame, so
+device latency seen by software matches hardware. HDMI is refreshed every third
+frame. It returns `0xd15c0001` after 60 s and logs VBlanks, sectors, requests,
+retries, and cache misses; Tang-Control's `status` lists the disc it serves.
+
+The machine adds a CD-ROM controller (`software/psx/cdrom.c`: commands,
+interrupt handshake, 1x/2x sector timing, 2048/2340-byte delivery, DMA channel
+3), the controller port with a digital pad in slot 1 (`software/psx/sio.c`),
+and the GTE lighting and color commands. With Spyro the Dragon (USA) the BIOS
+passes its license check, shows the PlayStation logo, and boots
+`SCUS_942.28`, which draws its first screen; the game later fails on an
+emulation difference that is still being investigated.
+
+`tests/psx_disc_host.c` runs the same boot on the host from a local `.bin`
+(`psx_disc_host BIOS BIN SECONDS [PPM]`), with diagnostics listed in its
+header: CD traces, kernel console output, call traces, RAM dumps for
+`tools/mipsdis.py`, and a RAM watchpoint.
 
 ## HDMI framebuffer output
 

@@ -891,3 +891,50 @@ Reevaluate the next milestone with the user. The software GPU is now 64 percent 
 - User Test: PASS
 
 ---
+## 27 COMMIT Unreleased 2026-09-28T22:45:36-07:00
+
+#### Coming From:
+
+Unreleased c3aaf81
+
+#### Purpose:
+
+Boot a commercial disc, Spyro the Dragon (USA), from the Tang's SD card toward its intro, as the user chose over optimizing the GPU further for the BIOS logo.
+
+#### Outcome:
+
+The SCPH-1001 BIOS now boots Spyro the Dragon from the SD card on hardware through the PlayStation logo into the game's own first screen, and the user reported that everything played slowly but properly until the run's 60 s limit ended as the game's "SONY COMPUTER ENTERTAINMENT" text appeared. The work was developed on the host against the user's local copy of the image with the new harness `tests/psx_disc_host.c` and disassembler `tools/mipsdis.py`. The old no-disc CD stub was replaced by `software/psx/cdrom.c`, a controller following PSX-SPX with banked registers, a response queue gated by the interrupt acknowledge, 1x/2x sector timing, 2048/2340-byte delivery, and DMA channel 3. `software/psx/sio.c` adds the controller port with a digital pad, without which the shell hung after its intro. The GTE gained all sixteen lighting and color commands, whose absence made the PlayStation logo's NCDS a reserved-instruction exception. Three emulation faults were also found and fixed. First, DMA interrupts are now raised on the rising edge of the DICR master flag, since level triggering trapped the kernel's CD DMA handler in an interrupt loop. Second, `psx_machine_idle_to` advances the clock to the next frame while the CPU only waits for VBlank, because delivering VBlanks without advancing time let the shell's six-VBlank drive timeout expire before the drive could answer, which sent it to the Main Menu. Third, the display copy precomputes its column map. The no-disc logo regressions kept their exact telemetry and framebuffer SHA-256. The hardware path adds a Gate 1 disc mailbox (request sequence, offset, and length at debug addresses `0x200`-`0x208`, and the disc size written by the BL616 at `0x20c`), widens the debug decode to address bits 9:2, and raises the debug ABI to `0x00020002`. Loader API 2 adds `stream_read`, `disc_request`, and `disc_sectors`. `software/programs/psx_disc` serves the machine from two 32-sector read-ahead windows. In Tang-Control, commit `fbbddc61060a` on its existing `feature/usb-cdc-file-transfer` branch adds `core/tangpsx.cpp`, which publishes the size of the `.bin` named by the first `.cue` in the SD root and streams each requested byte range with range-capable `fpga_file_stream`. That firmware was installed with `tangctl firmware` (app SHA-256 `2efb7242cc83d2d50b7d2401e7458f115541ec3d093741d732157e26483f6b7e`). Of four Gate 1 placements, options 3 and 4 met all setup and hold timing, and options 1 and 2 failed by -0.163 ns (`ddr_clk`) and -0.035 ns (`sys_clk`) on one endpoint each. Option 4 was deployed as `cores/console138k/tang-psx-gate1.bin` (5,066,438 bytes, SHA-256 `d148756ca79b9c7453c8494c27e12b37a3641275d3807894ef6f88e69029b6b8`, CRC-32 `15cd65fc`, verified on SD readback) with Fmax 75.532 MHz on the 75 MHz `sys_clk`, a thinner margin than entry 26's build. Tang-Control published 281,270 sectors for `Spyro the Dragon (USA).bin`. `psx_disc.tpx` (payload 587,580 bytes, CRC-32 `9df87d0d`) returned `0xd15c0001` after 60 s with 685 VBlanks, 496 sectors, 23 requests, no retries, 3,688 sector reads that waited for data, no failed requests, stream cancels, overflow, or HDMI underflow, and 798,541 GPU words, exactly the host run's count at that point. That is about 19 percent of real-time speed. The committed tree rebuilds `psx_disc.tpx` with a behavior-neutral GetlocP cleanup (payload 587,612 bytes, CRC-32 `c81a70f7`). On the host, Spyro later clears low RAM, including the kernel vectors, from a palette-fade routine whose list comes from a raw 2340-byte CD buffer. The data matches the disc and the crash does not move when the drive is made twice as fast or slow, so it is a deterministic emulation difference that is not yet identified. The GPU still lacks semi-transparency, and games using a different display mode appear cropped. `.ai/core-reference.md` gained PSXIO-002 (CD-ROM), PSXIO-003 (DMA interrupt edge), PSXIO-004 (digital pad), GTE-002 (color commands), and TCTL-004 (disc service). The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 27 with exactly six sections, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. The open items are to find the deterministic divergence that crashes Spyro about three seconds in, and to raise emulation speed from 19 percent of real time by profiling the sector waits and rendering on hardware. Remaining fidelity work is semi-transparency, display-mode handling, root-counter interrupts, and SPU, CD-DA, and XA audio.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- scripts/build-programs.sh
+- software/common/tpx_api.h
+- software/gate1/main.c
+- software/programs/psx_disc/bios.S
+- software/programs/psx_disc/main.c
+- software/psx/cdrom.c
+- software/psx/cdrom.h
+- software/psx/gte.c
+- software/psx/machine.c
+- software/psx/machine.h
+- software/psx/sio.c
+- software/psx/sio.h
+- tests/psx_bios_host.c
+- tests/psx_disc_host.c
+- tests/test_psx_bios.py
+- tests/test_psx_bios_jit.py
+- tools/mipsdis.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

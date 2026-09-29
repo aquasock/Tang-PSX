@@ -374,10 +374,10 @@ int main(int argc, char **argv)
 		uint32_t first = machine->bios_trace_count > 32u ?
 			machine->bios_trace_count - 32u : 0u;
 		printf("CD commands:");
-		for (n = machine->cd_command_count > 32u ?
-		     machine->cd_command_count - 32u : 0u;
-		     n < machine->cd_command_count; ++n)
-			printf(" %02x", machine->cd_commands[n & 31u]);
+		for (n = machine->cdrom.commands > 32u ?
+		     machine->cdrom.commands - 32u : 0u;
+		     n < machine->cdrom.commands; ++n)
+			printf(" %02x", machine->cdrom.history[n & 31u]);
 		putchar('\n');
 		printf("BIOS trace:");
 		for (n = first; n < machine->bios_trace_count; ++n)

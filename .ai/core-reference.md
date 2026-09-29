@@ -116,6 +116,10 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
 | How are PlayStation GPU commands, status, transfers, drawing, and VRAM laid out? | PSXGPU | PSXGPU-001 |
 | Which PlayStation address ranges, interrupts, and DMA channels are needed for BIOS startup? | PSXIO | PSXIO-001 |
+| How does the PlayStation CD-ROM controller behave (registers, commands, interrupts, sector sizes)? | PSXIO | PSXIO-002 |
+| When does DMA raise its interrupt? | PSXIO | PSXIO-003 |
+| How does the controller port talk to a digital pad? | PSXIO | PSXIO-004 |
+| How do the GTE lighting and color commands calculate? | GTE | GTE-002 |
 | What limits 75 MHz timing in LiteDRAM's Wishbone burst frontend? | TOOL | TOOL-006 |
 | How do I regenerate Gowin IP without the GUI? | TOOL | TOOL-001, TOOL-002 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
@@ -123,6 +127,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
 | How do I upload a core and read FPGA registers through Tang-Control? | TCTL | TCTL-001, TCTL-002 |
 | How do I tell from tangctl status that a core is loaded? | TCTL | TCTL-003 |
+| How does Tang-Control serve disc sectors to Tang-PSX? | TCTL | TCTL-004 |
 
 ---
 
@@ -148,8 +153,12 @@ AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32
 AE350-007: "The A25 core runs at the frequency of PLL_R[0] CLKOUT1, whatever the netlist connects to CORE_CLK; put the CPU clock on CLKOUT1"
 PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
 GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
+GTE-002: "Lighting/color commands chain LLM, BK+LCM, RGBC multiply, and FC depth cue through 44-bit MACs and push MAC/16 to the color FIFO"
 PSXGPU-001: "GPU uses GP0/GP1 at 1F801810h/1F801814h and 1024x512 16-bit VRAM; GP0 covers drawing, fills, copies, and CPU/VRAM transfers"
 PSXIO-001: "BIOS startup uses mirrored 2 MiB RAM, scratchpad, 512 KiB BIOS, IRQ state, and DMA channels 2 (GPU) and 6 (OTC)"
+PSXIO-002: "CD-ROM: 4 banked byte ports, INT1-5 handshake, INT3 acknowledge then INT2 completion, licensed GetID 02 00 20 00 SCEx, 800h/924h sectors from byte 24/12"
+PSXIO-003: "I_STAT bit 3 is raised on the 0-to-1 edge of DICR bit 31, not while a channel flag stays set"
+PSXIO-004: "Digital pad on SIO0: host 01 42 00 00 00, pad FF 41 5A btnlo btnhi, /ACK after every byte but the last; empty ports return FF without /ACK"
 TOOL-001: "gw_sh create_ipc/set_property/generate_target regenerate IP headlessly; read_ipc segfaults in batch mode"
 TOOL-002: "GowinModGen -do <file>.mod regenerates PLL wrappers; PLL_INIT ships in IDE/ipcore/PLL_ADV/data/PLL/pll_init.v"
 TOOL-003: "Gowin SDC cannot attach a clock to a net merged away by synthesis (TA2003); constrain the surviving PLL output net"
@@ -159,6 +168,7 @@ TOOL-006: "LiteDRAMWishbone2Native's narrow-to-wide burst path compares full add
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
+TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then advances sequence 0x200; Tang-Control answers with one stream session; disc size at 0x20c"
 ```
 
 ---
@@ -406,6 +416,18 @@ TCTL-003: "tangctl status reports core_running: no while a core is active; activ
     - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/gte-instructions.cc, gte-internal.h, and gte-transfer.cc, https://github.com/grumpycoders/pcsx-redux"
   verification: "Six generated GTE vectors covering normal-range MVMVA, RTPS, RTPT, NCLIP, AVSZ3, and AVSZ4 produced 31 expected register results both natively and on the AE350 in core-log entry 23. No original PlayStation hardware comparison was made, so this reverse-engineered behavior remains INFERRED."
 
+- record_id: GTE-002
+  kind: PROCESSOR
+  topic_id: GTE
+  title: "GTE lighting and color commands"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "NCS/NCT light a normal: [IR]=[MAC]=(LLM*V) SAR (sf*12), then [IR]=[MAC]=(BK*1000h+LCM*IR) SAR (sf*12), and push [MAC1/16,MAC2/16,MAC3/16,CODE] to the color FIFO. NCCS/NCCT and CC then form [R*IR1,G*IR2,B*IR3] SHL 4 from RGBC before shifting and pushing; NCDS/NCDT, CDP, and DCPL additionally depth-cue that product toward the far color FC by IR0 (MAC+(FC-MAC)*IR0); DPCS/DPCT depth-cue [R,G,B] SHL 16 (DPCT taking its three colors from RGB0), INTPL depth-cues [IR] SHL 12, GPF computes IR*IR0, GPL MAC SHL (sf*12)+IR*IR0, SQR IR*IR, and OP the cross product of IR with the RT diagonal. FLAG bits 30-25 report 44-bit MAC overflow, 24-22 IR saturation, 21-19 color-FIFO saturation to 00h-FFh, and bit 31 is the OR of bits 30-23 and 18-13."
+  consequence: "software/psx/gte.c implements all sixteen commands. The FC-MAC step saturates IR with lm=0 regardless of the command's lm bit, as PCSX-Redux does; command latency and intermediate per-product overflow checks are not modeled."
+  sources:
+    - "PSX-SPX, Geometry Transformation Engine (GTE), https://psx-spx.consoledev.net/ps1/cpu/gte/geometrytransformationenginegte/ (color and general-purpose calculation commands, FLAG register)"
+    - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/gte-instructions.cc"
+  verification: "The SCPH-1001 PlayStation logo (NCDS) and Spyro the Dragon's first screen rendered as expected on the host and the AE350 (core-log entry 27), and the 96 CPU/GTE reference checks still pass. No bit-level comparison with original hardware was made."
 - record_id: PSXGPU-001
   kind: PROCESSOR
   topic_id: PSXGPU
@@ -435,6 +457,41 @@ TCTL-003: "tangctl status reports core_running: no while a core is active; activ
     - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/psxmem.cc, psxhw.cc, and psxdma.{cc,h}, https://github.com/grumpycoders/pcsx-redux"
   verification: "The SCPH-1001 ROM completed the approved logo checkpoint on the AE350 after 99,999,544 interpreted instructions, 158,497 DMA words, and 199 modeled VBlanks, with zero unknown I/O accesses in the host regression and matching terminal hardware telemetry in core-log entry 24. Peripheral accuracy beyond that command path has not been compared with original hardware, so the record remains INFERRED."
 
+- record_id: PSXIO-002
+  kind: PROCESSOR
+  topic_id: PSXIO
+  title: "CD-ROM controller registers, commands, and sector delivery"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "The controller is four byte ports at 1F801800h-1F801803h, banked by the index in 1F801800h bits 1:0. Reading 1F801800h returns the index with PRMEMPT (bit 3), PRMWRDY (bit 4), RSLRRDY (bit 5), DRQSTS (bit 6), and BUSYSTS (bit 7). Commands are written to 1F801801h bank 0 with parameters at 1F801802h bank 0. Results are read from 1F801801h. Interrupt enable is 1F801802h bank 1, and the interrupt type is read from 1F801803h banks 1/3 (INT1 data ready, INT2 complete, INT3 acknowledge, INT4 data end, INT5 error), acknowledged by writing 1F801803h bank 1, whose bit 6 clears the parameter FIFO. Writing bit 7 (BFRD) of 1F801803h bank 0 loads the sector buffer into the data FIFO read by 1F801802h or DMA channel 3. Each command first answers INT3; Init, MotorOn, Stop, Pause, SeekL/P, SetSession, ReadTOC, and GetID later answer INT2 (GetID for a licensed Mode 2 disc: 02 00 20 00 followed by SCEA, SCEE, or SCEI). A status byte reports Error, Motor, SeekError, IdError, ShellOpen, Read, Seek, and Play. Setmode bit 7 selects double speed (75 or 150 sectors per second) and bit 5 the sector size: 800h delivers the 2048 data bytes (raw offset 24 for Mode 2 Form 1), 924h the 2340 bytes after the 12 sync bytes. Init sets the mode to 20h."
+  consequence: "software/psx/cdrom.c implements this controller with 1x/2x sector timing, a response queue that waits for each acknowledge, holding of a sector until the CPU acknowledges INT1, and dropping of real-time XA audio sectors when ADPCM is enabled. CD-DA, XA-ADPCM playback, and exact response latencies are not modeled; the acknowledge (20,000 cycles), completion, and seek delays are approximations."
+  sources:
+    - "PSX-SPX, CDROM Drive, https://psx-spx.consoledev.net/ps1/cdr/cdromdrive/ (register map, status, interrupt, command, Setmode, GetID, and Getparam/GetlocL/GetlocP sections, fetched 2026-09-28)"
+  verification: "On the host and on the AE350 (core-log entry 27), SCPH-1001 accepted a licensed US disc image through this controller, read the license and logo sectors, and booted SCUS_942.28 from the ISO file system; sector data arriving in RAM matched the image byte for byte. No original PlayStation hardware comparison was made."
+
+- record_id: PSXIO-003
+  kind: PROCESSOR
+  topic_id: PSXIO
+  title: "DMA interrupt edge"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "DICR (1F8010F4h) bit 31 is the DMA master interrupt flag, set while bit 15 forces it or bit 23 enables and an enabled channel flag (bits 30:24) is set. I_STAT bit 3 is set when bit 31 changes from 0 to 1, not continuously while it stays set."
+  consequence: "Raising I_STAT bit 3 on every DICR update while another channel flag stays set produces an endless DMA interrupt loop in the SCPH-1001 kernel's CD DMA handler; machine.c raises it only on the rising edge."
+  sources:
+    - "PSX-SPX, DMA Channels, https://psx-spx.consoledev.net/ps1/system/dmachannels/ (DICR)"
+  verification: "Inferred from the SCPH-1001 kernel's behavior on the host (core-log entry 27): with a level-triggered bit 3, its DMA handler re-entered on every acknowledge; with edge triggering the disc boot proceeds."
+
+- record_id: PSXIO-004
+  kind: PROCESSOR
+  topic_id: PSXIO
+  title: "Controller-port digital pad protocol"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "The controller and memory-card port (SIO0) is at 1F801040h (TX/RX data), 1F801044h (JOY_STAT: bit 0 TX ready, bit 1 RX not empty, bit 2 TX finished, bit 7 /ACK level, bit 9 interrupt), 1F801048h (mode), 1F80104Ah (JOY_CTRL: bit 1 select, bit 4 acknowledge, bit 6 reset, bit 12 /ACK interrupt enable, bit 13 port 2), and 1F80104Eh (baud). A digital pad answers the host bytes 01 42 00 00 00 with FF 41 5A, then the low and high button bytes (active low), and pulls /ACK after every byte except the last; /ACK raises IRQ7 when enabled. An empty port or memory-card address 81h answers FF without /ACK."
+  consequence: "software/psx/sio.c models a digital pad with no buttons pressed in port 1 and empty memory-card slots. The SCPH-1001 shell polls the port after its intro and hangs without it."
+  sources:
+    - "PSX-SPX, Controllers and Memory Cards, https://psx-spx.consoledev.net/ps1/controllersandmemorycards/"
+  verification: "Inferred: the SCPH-1001 BIOS's pad driver completes its polls against this model on the host and the AE350 (core-log entry 27). Memory-card and analog-pad protocols are not modeled."
 - record_id: TOOL-006
   kind: TOOLCHAIN
   topic_id: TOOL
@@ -543,6 +600,18 @@ TCTL-003: "tangctl status reports core_running: no while a core is active; activ
   sources:
     - "Tang-Control commit 26e975bef22b, scripts/tangctl.py status output"
   verification: "Observed repeatedly on 2026-09-28 (core-log entry 26) while Gate 1 answered peek requests."
+
+- record_id: TCTL-004
+  kind: EXTERNAL
+  topic_id: TCTL
+  title: "Tang-PSX disc service"
+  status: VERIFIED
+  verified_date: 2026-09-28
+  statement: "While active_core is 81 and debug address 0x04 reads 0x00020002 or later, Tang-Control's core/tangpsx.cpp finds the first .cue in the SD root, writes the size of its FILE's .bin in 2352-byte sectors to debug address 0x20c, and polls 0x200. Each new sequence value is served when a second read of 0x200 after reading offset 0x204 and length 0x208 matches: one FPGA stream session (START, DATA, END with the byte count) carrying that byte range, at most 256 sectors. fpga_file_stream switches the link to 5,000,000 baud for each session. The USB console status reports psx_disc, psx_disc_sectors, psx_disc_published, psx_disc_requests, psx_disc_failed, and psx_disc_bytes."
+  consequence: "Gate 1 loader API 2 (disc_request, stream_read, disc_sectors) is the firmware side of this contract; software/programs/psx_disc requests 32-sector windows with one outstanding request."
+  sources:
+    - "Tang-Control commit fbbddc61060a (feature/usb-cdc-file-transfer), core/tangpsx.cpp and utils/fpga_file_stream.cpp"
+  verification: "On 2026-09-28 (core-log entry 27) it served 23 requests (1,731,072 bytes) of a 281,270-sector image to psx_disc with no failures, cancels, or FIFO overflow."
 ```
 
 ---

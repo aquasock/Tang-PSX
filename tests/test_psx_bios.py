@@ -31,6 +31,8 @@ def main() -> int:
             ROOT / "software/psx/gpu.c",
             ROOT / "software/psx/jit.c",
             ROOT / "software/psx/machine.c",
+            ROOT / "software/psx/cdrom.c",
+            ROOT / "software/psx/sio.c",
             ROOT / "tests/psx_bios_host.c",
         ]
         subprocess.run([

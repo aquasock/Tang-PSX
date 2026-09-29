@@ -423,12 +423,40 @@ static void api_set_reg(uint32_t reg, uint32_t value)
 	}
 }
 
+static int32_t api_stream_read(uint32_t *data)
+{
+	uint32_t status = loader_status_read();
+
+	if (!(status & (1u << CSR_LOADER_STATUS_VALID_OFFSET)))
+		return -1;
+	*data = loader_data_read();
+	loader_pop_write(1);
+	return (int32_t)((status >> CSR_LOADER_STATUS_TAG_OFFSET) &
+		((1u << CSR_LOADER_STATUS_TAG_SIZE) - 1u));
+}
+
+/* Offset and length first: Tang-Control acts when the sequence changes. */
+static void api_disc_request(uint32_t offset, uint32_t length)
+{
+	gate1_disc_offset_write(offset);
+	gate1_disc_length_write(length);
+	gate1_disc_sequence_write(gate1_disc_sequence_read() + 1u);
+}
+
+static uint32_t api_disc_sectors(void)
+{
+	return gate1_disc_sectors_read();
+}
+
 static const struct tpx_api loader_api = {
 	.version      = TPX_API_VERSION,
 	.cpu_hz       = CPU_HZ,
 	.putc         = api_putc,
 	.set_reg      = api_set_reg,
 	.flush_dcache = l1d_flush,
+	.stream_read  = api_stream_read,
+	.disc_request = api_disc_request,
+	.disc_sectors = api_disc_sectors,
 };
 
 /* Blocks until the stream FIFO has an entry, then returns and discards it. */

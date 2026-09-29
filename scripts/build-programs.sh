@@ -39,7 +39,7 @@ for name in "${programs[@]}"; do
         extra_sources=("$PROJECT_ROOT/software/psx/r3000.c"
             "$PROJECT_ROOT/software/psx/gte.c")
     fi
-    if [[ "$name" == psx_bios ]]; then
+    if [[ "$name" == psx_bios || "$name" == psx_disc ]]; then
         bios=${PSX_BIOS:-"$PROJECT_ROOT/../scph1001.bin"}
         if [[ ! -f "$bios" ]] || [[ $(stat -c %s "$bios") -ne 524288 ]]; then
             echo "PSX_BIOS must name a 524288-byte SCPH-1001 image" >&2

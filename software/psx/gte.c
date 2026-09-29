@@ -279,6 +279,230 @@ static int command_rtps(struct psx_gte *gte, uint32_t instruction,
 	return 0;
 }
 
+/*
+ * Lighting and color commands (PSX-SPX "GTE Color Calculation Commands").
+ * MAC1-3 keep 44-bit intermediate results; FLAG records 43-bit overflow,
+ * IR saturation, and color FIFO saturation.
+ */
+static const uint32_t mac_positive[3] = {0x40000000u, 0x20000000u, 0x10000000u};
+static const uint32_t mac_negative[3] = {0x08000000u, 0x04000000u, 0x02000000u};
+static const uint32_t ir_saturated[3] = {0x01000000u, 0x00800000u, 0x00400000u};
+static const uint32_t color_saturated[3] = {0x00200000u, 0x00100000u,
+	0x00080000u};
+
+/* Checks a 44-bit MAC value for overflow and stores it shifted. */
+static int64_t set_mac(struct psx_gte *gte, uint32_t n, int64_t value,
+	uint32_t shift)
+{
+	if (value > 0x7ffffffffffll)
+		gte->control[31] |= mac_positive[n];
+	else if (value < -0x80000000000ll)
+		gte->control[31] |= mac_negative[n];
+	/* The accumulator is 44 bits wide. */
+	value = (int64_t)((uint64_t)value << 20) >> 20;
+	gte->data[25u + n] = (uint32_t)(int32_t)(value >> shift);
+	return value >> shift;
+}
+
+static void set_ir(struct psx_gte *gte, uint32_t n, int64_t value, int lm)
+{
+	gte->data[9u + n] = (uint32_t)(int32_t)(int16_t)clamp_flag(gte, value,
+		lm ? 0 : -0x8000, 0x7fff, ir_saturated[n]);
+}
+
+static int32_t ir(const struct psx_gte *gte, uint32_t n)
+{
+	return lo16(gte->data[9u + n]);
+}
+
+static int32_t ir0(const struct psx_gte *gte)
+{
+	return lo16(gte->data[8]);
+}
+
+/* Color FIFO push of [MAC1/16, MAC2/16, MAC3/16, CODE]. */
+static void push_color(struct psx_gte *gte)
+{
+	uint32_t value = gte->data[6] & 0xff000000u;
+	uint32_t n;
+	for (n = 0; n < 3u; ++n) {
+		int32_t mac = (int32_t)gte->data[25u + n];
+		value |= (uint32_t)clamp_flag(gte, mac >> 4, 0, 0xff,
+			color_saturated[n]) << (8u * n);
+	}
+	gte->data[20] = gte->data[21];
+	gte->data[21] = gte->data[22];
+	gte->data[22] = value;
+}
+
+/* [IR] = [MAC] = (add SHL 12 + M*v) SAR shift, for matrix mx. */
+static void matrix_vector(struct psx_gte *gte, uint32_t mx, const int32_t *v,
+	const int64_t *add, uint32_t shift, int lm)
+{
+	uint32_t row;
+	for (row = 0; row < 3u; ++row) {
+		int64_t sum = add ? add[row] * 4096 : 0;
+		uint32_t col;
+		for (col = 0; col < 3u; ++col)
+			sum += (int64_t)matrix(gte, mx, row, col) * v[col];
+		set_ir(gte, row, set_mac(gte, row, sum, shift), lm);
+	}
+}
+
+/* Light the normal: [IR] = LLM*V, then [IR] = BK*1000h + LCM*IR. */
+static void normal_color(struct psx_gte *gte, uint32_t vertex, uint32_t shift,
+	int lm)
+{
+	int32_t v[3];
+	int64_t background[3];
+	uint32_t n;
+	for (n = 0; n < 3u; ++n)
+		v[n] = vector(gte, vertex, n);
+	matrix_vector(gte, 1, v, 0, shift, lm);
+	for (n = 0; n < 3u; ++n) {
+		v[n] = ir(gte, n);
+		background[n] = control_vector(gte, 1, n);
+	}
+	matrix_vector(gte, 2, v, background, shift, lm);
+}
+
+/*
+ * Interpolate unshifted MAC values toward the far color by IR0, then shift,
+ * saturate into IR, and push the color. The (FC - MAC) step saturates IR
+ * with lm=0 regardless of the command's lm bit.
+ */
+static void depth_cue(struct psx_gte *gte, const int64_t *mac,
+	uint32_t shift, int lm)
+{
+	uint32_t n;
+	for (n = 0; n < 3u; ++n)
+		set_ir(gte, n, set_mac(gte, n, control_vector(gte, 2, n) * 4096 -
+			mac[n], shift), 0);
+	for (n = 0; n < 3u; ++n)
+		set_ir(gte, n, set_mac(gte, n, (int64_t)ir(gte, n) * ir0(gte) +
+			mac[n], shift), lm);
+	push_color(gte);
+}
+
+/* [MAC] = [R*IR1, G*IR2, B*IR3] SHL 4, unshifted, from the RGBC color. */
+static void color_product(const struct psx_gte *gte, int64_t *mac)
+{
+	uint32_t n;
+	for (n = 0; n < 3u; ++n)
+		mac[n] = ((int64_t)((gte->data[6] >> (8u * n)) & 0xffu) *
+			ir(gte, n)) << 4;
+}
+
+static void shift_to_color(struct psx_gte *gte, const int64_t *mac,
+	uint32_t shift, int lm)
+{
+	uint32_t n;
+	for (n = 0; n < 3u; ++n)
+		set_ir(gte, n, set_mac(gte, n, mac[n], shift), lm);
+	push_color(gte);
+}
+
+static void command_color(struct psx_gte *gte, uint32_t command,
+	uint32_t shift, int lm)
+{
+	int64_t mac[3];
+	uint32_t vertex;
+	uint32_t n;
+
+	switch (command) {
+	case 0x1e: /* NCS */
+	case 0x20: /* NCT */
+		for (vertex = 0; vertex < (command == 0x20u ? 3u : 1u); ++vertex) {
+			normal_color(gte, vertex, shift, lm);
+			push_color(gte);
+		}
+		break;
+	case 0x1b: /* NCCS */
+	case 0x3f: /* NCCT */
+		for (vertex = 0; vertex < (command == 0x3fu ? 3u : 1u); ++vertex) {
+			normal_color(gte, vertex, shift, lm);
+			color_product(gte, mac);
+			shift_to_color(gte, mac, shift, lm);
+		}
+		break;
+	case 0x13: /* NCDS */
+	case 0x16: /* NCDT */
+		for (vertex = 0; vertex < (command == 0x16u ? 3u : 1u); ++vertex) {
+			normal_color(gte, vertex, shift, lm);
+			color_product(gte, mac);
+			depth_cue(gte, mac, shift, lm);
+		}
+		break;
+	case 0x1c: /* CC */
+	case 0x14: /* CDP */
+		{
+			int32_t v[3];
+			int64_t background[3];
+			for (n = 0; n < 3u; ++n) {
+				v[n] = ir(gte, n);
+				background[n] = control_vector(gte, 1, n);
+			}
+			matrix_vector(gte, 2, v, background, shift, lm);
+		}
+		color_product(gte, mac);
+		if (command == 0x1cu)
+			shift_to_color(gte, mac, shift, lm);
+		else
+			depth_cue(gte, mac, shift, lm);
+		break;
+	case 0x29: /* DCPL */
+		color_product(gte, mac);
+		depth_cue(gte, mac, shift, lm);
+		break;
+	case 0x10: /* DPCS */
+	case 0x2a: /* DPCT: three colors taken from RGB0 */
+		for (vertex = 0; vertex < (command == 0x2au ? 3u : 1u); ++vertex) {
+			uint32_t color = command == 0x2au ? gte->data[20] :
+				gte->data[6];
+			for (n = 0; n < 3u; ++n)
+				mac[n] = (int64_t)((color >> (8u * n)) & 0xffu) << 16;
+			depth_cue(gte, mac, shift, lm);
+		}
+		break;
+	case 0x11: /* INTPL */
+		for (n = 0; n < 3u; ++n)
+			mac[n] = (int64_t)ir(gte, n) << 12;
+		depth_cue(gte, mac, shift, lm);
+		break;
+	case 0x3d: /* GPF */
+		for (n = 0; n < 3u; ++n)
+			mac[n] = (int64_t)ir(gte, n) * ir0(gte);
+		shift_to_color(gte, mac, shift, lm);
+		break;
+	case 0x3e: /* GPL */
+		for (n = 0; n < 3u; ++n)
+			mac[n] = ((int64_t)(int32_t)gte->data[25u + n] << shift) +
+				(int64_t)ir(gte, n) * ir0(gte);
+		shift_to_color(gte, mac, shift, lm);
+		break;
+	case 0x28: /* SQR */
+		for (n = 0; n < 3u; ++n)
+			set_ir(gte, n, set_mac(gte, n, (int64_t)ir(gte, n) *
+				ir(gte, n), shift), lm);
+		break;
+	case 0x0c: /* OP: cross product of IR with the RT diagonal */
+		{
+			int64_t d1 = matrix(gte, 0, 0, 0);
+			int64_t d2 = matrix(gte, 0, 1, 1);
+			int64_t d3 = matrix(gte, 0, 2, 2);
+			int64_t i1 = ir(gte, 0);
+			int64_t i2 = ir(gte, 1);
+			int64_t i3 = ir(gte, 2);
+			set_ir(gte, 0, set_mac(gte, 0, i3 * d2 - i2 * d3, shift), lm);
+			set_ir(gte, 1, set_mac(gte, 1, i1 * d3 - i3 * d1, shift), lm);
+			set_ir(gte, 2, set_mac(gte, 2, i2 * d1 - i1 * d2, shift), lm);
+		}
+		break;
+	default:
+		break;
+	}
+}
+
 int psx_gte_command(struct psx_gte *gte, uint32_t instruction)
 {
 	uint32_t command = instruction & 0x3fu;
@@ -319,6 +543,14 @@ int psx_gte_command(struct psx_gte *gte, uint32_t instruction)
 		command_rtps(gte, instruction, 0, 0);
 		command_rtps(gte, instruction, 1, 0);
 		return command_rtps(gte, instruction, 2, 1);
+	case 0x0c: case 0x10: case 0x11: case 0x13: case 0x14: case 0x16:
+	case 0x1b: case 0x1c: case 0x1e: case 0x20: case 0x28: case 0x29:
+	case 0x2a: case 0x3d: case 0x3e: case 0x3f:
+		command_color(gte, command, ((instruction >> 19) & 1u) * 12u,
+			(instruction >> 10) & 1);
+		if (gte->control[31] & 0x7f87e000u)
+			gte->control[31] |= FLAG_ERROR;
+		return 0;
 	default:
 		return -1;
 	}

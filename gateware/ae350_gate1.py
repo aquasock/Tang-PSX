@@ -16,7 +16,7 @@ from litex.soc.cores.clock.gowin_gw5a import GW5APLL
 from litex.soc.integration.builder import Builder
 from litex.soc.integration.soc import SoCRegion
 from litex.soc.interconnect import ahb as litex_ahb
-from litex.soc.interconnect.csr import AutoCSR, CSRStorage
+from litex.soc.interconnect.csr import AutoCSR, CSRStatus, CSRStorage
 from litex.soc.cores.cpu.gowin_ae350.core import GowinAE350
 from litex.soc.cores.video import VideoGowinHDMIPHY
 
@@ -288,6 +288,13 @@ class Gate1Status(LiteXModule, AutoCSR):
         self._loader_bytes = CSRStorage(32, reset=0, description="Payload bytes of the last image")
         self._loader_crc = CSRStorage(32, reset=0, description="Computed CRC-32 of the last image payload")
         self._loader_result = CSRStorage(32, reset=0, description="Return value of the last program")
+        # Disc sector mailbox served by Tang-Control from the SD card. Firmware
+        # writes the byte offset and length, then advances the sequence; the
+        # BL616 answers each new sequence with one stream session.
+        self._disc_sequence = CSRStorage(32, reset=0, description="Disc request sequence")
+        self._disc_offset = CSRStorage(32, reset=0, description="Disc request byte offset")
+        self._disc_length = CSRStorage(32, reset=0, description="Disc request byte length")
+        self._disc_sectors = CSRStatus(32, description="Disc image size in 2352-byte sectors, published by Tang-Control")
         self._log = []
         for index in range(32):
             register = CSRStorage(32, name=f"log{index}",
@@ -476,6 +483,12 @@ class Gate1SoC(tang_console.BaseSoC):
             ddr_status[2],
         ))
 
+        # Tang-Control publishes the disc size by writing debug address 0x20c.
+        disc_sectors = Signal(32)
+        self.sync.diag += If(debug_valid & debug_write & (debug_address == 0x20c),
+            disc_sectors.eq(debug_wdata))
+        self.specials += MultiReg(disc_sectors, self.gate1._disc_sectors.status, "sys")
+
         reset_request = Signal()
         reset_count = Signal(5)
         self.reset_pulse = reset_pulse = PulseSynchronizer("diag", "sys")
@@ -492,7 +505,7 @@ class Gate1SoC(tang_console.BaseSoC):
 
         debug_registers = {
             0x00: debug_rdata_comb.eq(0x54505831),
-            0x04: debug_rdata_comb.eq(0x00020001),
+            0x04: debug_rdata_comb.eq(0x00020002),
             0x08: debug_rdata_comb.eq(self.gate1._stage.storage),
             0x0c: debug_rdata_comb.eq(self.gate1._failure.storage),
             0x10: debug_rdata_comb.eq(self.gate1._ddr_words.storage),
@@ -518,15 +531,19 @@ class Gate1SoC(tang_console.BaseSoC):
             0xec: debug_rdata_comb.eq(loader.cancels),
             0xf0: debug_rdata_comb.eq(loader.overflow),
             0xf4: debug_rdata_comb.eq(video_status),
+            0x200: debug_rdata_comb.eq(self.gate1._disc_sequence.storage),
+            0x204: debug_rdata_comb.eq(self.gate1._disc_offset.storage),
+            0x208: debug_rdata_comb.eq(self.gate1._disc_length.storage),
+            0x20c: debug_rdata_comb.eq(disc_sectors),
         }
         for index, register in enumerate(self.gate1._log):
             debug_registers[0x40 + 4*index] = debug_rdata_comb.eq(register.storage)
 
         self.comb += debug_rdata_comb.eq(0)
-        # All directly decoded Gate 1 registers are aligned below 0x100. Decode
-        # only the six meaningful word-index bits instead of building 32-bit
-        # equality comparators for every entry in the log ring.
-        self.comb += Case(debug_address[2:8], {
+        # Decode only the eight meaningful word-index bits (0x000-0x3fc)
+        # instead of building 32-bit equality comparators for every entry in
+        # the log ring; 0x100 is the write-only reset register.
+        self.comb += Case(debug_address[2:10], {
             address >> 2: assignment
             for address, assignment in debug_registers.items()
         })

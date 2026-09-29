@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-#define TPX_API_VERSION     1u
+#define TPX_API_VERSION     2u
 #define TPX_IMAGE_MAGIC     0x31495054u     /* "TPI1" */
 #define TPX_IMAGE_HEADER    32u
 
@@ -56,6 +56,26 @@ struct tpx_api {
 	void (*putc)(char c);                           /* append to the log ring */
 	void (*set_reg)(uint32_t reg, uint32_t value);  /* enum tpx_reg */
 	void (*flush_dcache)(void);                     /* write back + invalidate L1D */
+	/* Version 2: disc sectors served by Tang-Control from the SD card. */
+	/*
+	 * Returns the next stream FIFO entry's tag (enum tpx_stream_tag) and its
+	 * data, or -1 when the FIFO is empty. Never blocks.
+	 */
+	int32_t (*stream_read)(uint32_t *data);
+	/*
+	 * Asks Tang-Control for `length` bytes of the disc image starting at byte
+	 * `offset`. They arrive as one stream session: START, DATA words
+	 * (little-endian), END carrying the byte count.
+	 */
+	void (*disc_request)(uint32_t offset, uint32_t length);
+	uint32_t (*disc_sectors)(void);                 /* 0 = no disc published */
+};
+
+enum tpx_stream_tag {
+	TPX_STREAM_DATA   = 0,
+	TPX_STREAM_START  = 1,
+	TPX_STREAM_END    = 2,
+	TPX_STREAM_CANCEL = 3,
 };
 
 typedef uint32_t (*tpx_entry)(const struct tpx_api *api);

@@ -51,7 +51,8 @@ def main() -> int:
             str(ROOT / "tests/psx_bios_rv32.c"),
             str(ROOT / "software/programs/psx_bios/bios.S"),
             *(str(ROOT / "software/psx" / name) for name in (
-                "r3000.c", "gte.c", "gpu.c", "jit.c", "machine.c")),
+                "r3000.c", "gte.c", "gpu.c", "jit.c", "machine.c",
+                "cdrom.c", "sio.c")),
             "-lgcc", "-o", str(executable),
         ], check=True)
         completed = subprocess.run([qemu, str(executable)],
