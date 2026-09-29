@@ -723,3 +723,43 @@ Reevaluate the plan with the user before continuing; the recommended next milest
 - User Test: PASS
 
 ---
+
+## 23 COMMIT Unreleased 2026-09-28T17:03:31-07:00
+
+#### Coming From:
+
+Unreleased eebc369
+
+#### Purpose:
+
+Implement the approved R3000A interpreter and software GTE reference-vector diagnostic, run it through the proven loader, and provide immediate HDMI confirmation.
+
+#### Outcome:
+
+Gate 1 now has a reusable portable PlayStation execution foundation in `software/psx`: the MIPS I interpreter covers integer arithmetic, shifts, HI/LO multiply and divide, immediate operations, little-endian byte/halfword/word and unaligned loads and stores, jumps and branches, COP0, COP2 transfers, load and branch delay slots, and exception Cause, EPC, BD, and BadVAddr state. The initial software GTE subset implements data/control transfers, MVMVA, RTPS, RTPT, NCLIP, AVSZ3, and AVSZ4; command timing, lighting/color operations, and untested saturation edges remain outside this milestone and it is not yet a BIOS-capable machine emulator. `tools/gen_psx_vectors.py` deterministically generated nine CPU and six GTE cases, and the native regression passed all 96 selected state checks with vector CRC-32 `0xc2527637` and state checksum `0x9349f3af`; AddressSanitizer and undefined-behavior checks passed, repeat generation was identical, and an altered ADDU was detected by the mutation check. The complete program-build regression passed for `hello`, `blob`, and `psx_diag`. The packaged image contained a 13,652-byte payload with CRC-32 `0x15f3b1a0`; the 13,684-byte TPX had SHA-256 `8a3b82829650951c3979fcb9371630ea8f19cad39630a2518e7da8136019ac44` and SD readback CRC-32 `0x8785f13b`. Streaming took 55 ms through the flow-controlled FIFO. On the AE350 all 96 checks passed in `0x003f7588` core cycles, returning `0x3000a001` with stage `0x80003001`, failure zero, vector counts `0x00090006`, checksum `0x9349f3af`, no failure detail, and no loader overflow, cancellation, or HDMI underflow. Tang-Control matched all 62 requests with responses and reported zero timeouts, CRC errors, malformed packets, unexpected responses, USB drops, or receive-FIFO overflows. The user saw and accepted the green-and-blue `PSX CPU` / `GTE PASS` framebuffer card. `.ai/core-reference.md` gained PSXCPU-001 from the MIPS R3000 manual plus PCSX-Redux and GTE-001 from PSX-SPX plus PCSX-Redux; the GTE record remains INFERRED because no original PlayStation hardware comparison was made. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, validated this entry and the reference additions, confirmed 23 sequential entries and exactly six required sections, inspected the complete `.ai` diff, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Gate 1 is complete at its approved interpreter-and-GTE diagnostic boundary; reevaluate with the user before starting the next milestone, with the recommended path being PlayStation 1024x512 15-bit VRAM scanout and the GPU/BIOS memory-map and command path needed to begin executing the startup sequence.
+
+#### Files Modified:
+
+- README.md
+- scripts/build-programs.sh
+- software/programs/psx_diag/diag.c
+- software/programs/psx_diag/diag.h
+- software/programs/psx_diag/main.c
+- software/psx/gte.c
+- software/psx/psx.h
+- software/psx/r3000.c
+- tests/psx_diag_host.c
+- tests/test_psx_diag.py
+- tools/gen_psx_vectors.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

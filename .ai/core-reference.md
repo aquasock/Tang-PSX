@@ -65,6 +65,14 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
   name: "AE350 hard RISC-V processor"
   description: "The Andes-based AE350 subsystem inside the GW5AST: ISA, reset, address map, caches."
 
+- topic_id: PSXCPU
+  name: "PlayStation R3000A-compatible processor"
+  description: "The PlayStation CPU's MIPS I instruction, pipeline-delay, exception, and coprocessor behavior."
+
+- topic_id: GTE
+  name: "PlayStation Geometry Transformation Engine"
+  description: "COP2 register behavior, command encoding, fixed-point calculations, saturation, and pipeline timing."
+
 - topic_id: TOOL
   name: "Toolchain behavior"
   description: "Gowin EDA and LiteX/Migen behavior that affects correctness or reproducibility."
@@ -95,6 +103,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | What cache geometry does this board's AE350 report? Does fence.i cover the D-cache? | AE350 | AE350-004 |
 | Why do uncached AE350 benchmarks not measure memory speed? | AE350 | AE350-005 |
 | How much of a system-clock cycle do the AE350 macro's RAM-port inputs need? | AE350 | AE350-006 |
+| Which CPU semantics must the R3000A interpreter preserve? | PSXCPU | PSXCPU-001 |
+| Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
 | What limits 75 MHz timing in LiteDRAM's Wishbone burst frontend? | TOOL | TOOL-006 |
 | How do I regenerate Gowin IP without the GUI? | TOOL | TOOL-001, TOOL-002 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
@@ -123,6 +133,8 @@ AE350-003: "The A25 L1 data cache is write-back; the 0xE8000000-0xEFFFFFFF perip
 AE350-005: "With caches off, AE350 code running from the ROM port is instruction-fetch bound (fixed 784/1008 core cycles per loop iteration measured), masking memory latency"
 AE350-006: "Gowin's timing model gives the AE350_SOC RAM-port (DDR_H*) inputs about 5 ns of setup at the macro; register every path into them"
 AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32 B lines, inferred), mmsc_cfg = 0x2007F039; fence.i makes D-cache stores visible to instruction fetch"
+PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
+GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
 TOOL-001: "gw_sh create_ipc/set_property/generate_target regenerate IP headlessly; read_ipc segfaults in batch mode"
 TOOL-002: "GowinModGen -do <file>.mod regenerates PLL wrappers; PLL_INIT ships in IDE/ipcore/PLL_ADV/data/PLL/pll_init.v"
 TOOL-003: "Gowin SDC cannot attach a clock to a net merged away by synthesis (TA2003); constrain the surviving PLL output net"
@@ -337,6 +349,32 @@ TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 b
   sources:
     - "Gowin EDA 1.9.11.03 place-and-route timing paths (build/gate1-place*/gateware/impl/pnr/project.timing_paths), AE350_SOC endpoints"
   verification: "Read from this project's timing reports (core-log entries 17 and 19)."
+
+- record_id: PSXCPU-001
+  kind: PROCESSOR
+  topic_id: PSXCPU
+  title: "PlayStation R3000A-compatible execution semantics"
+  status: SOURCED
+  verified_date: 2026-09-28
+  statement: "The PlayStation CPU uses the MIPS I integer instruction set and R3000 pipeline behavior. A jump or branch is followed by one executed delay-slot instruction. Integer and coprocessor loads have a one-instruction result delay. On an exception in a branch delay slot, Cause.BD is set and EPC identifies the branch rather than the delay-slot instruction; otherwise EPC identifies the faulting instruction. The R3000 CP0 exception codes used here are AdEL 4, AdES 5, IBE 6, DBE 7, Syscall 8, Break 9, Reserved Instruction 10, Coprocessor Unusable 11, and Arithmetic Overflow 12."
+  consequence: "software/psx/r3000.c preserves the branch and load delays, CP0 Cause/EPC/BadVAddr state, arithmetic and address exceptions, little-endian memory operations, HI/LO, and COP2 transfers needed by the initial interpreter diagnostic."
+  sources:
+    - "MIPS Computer Systems, R3000 User's Manual, https://usermanual.wiki/Document/r3000manual.723589236.pdf"
+    - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/psxinterpreter.cc and src/core/r3000a.{cc,h}, https://github.com/grumpycoders/pcsx-redux"
+  verification: "The independently generated nine-vector CPU regression passed 65 selected state checks natively and on the AE350 in core-log entry 23. This is not validation against original PlayStation silicon, so the record remains SOURCED."
+
+- record_id: GTE-001
+  kind: PROCESSOR
+  topic_id: GTE
+  title: "GTE COP2 registers and coordinate commands"
+  status: INFERRED
+  verified_date: 2026-09-28
+  statement: "The GTE is accessed as COP2 through 32 data and 32 control registers. Its coordinate-command set includes MVMVA (matrix/vector multiply and translation), RTPS and RTPT (single/triple perspective transforms), NCLIP (signed screen-space triangle area), and AVSZ3/AVSZ4 (depth averaging). Results pass through signed IR and MAC registers plus screen-coordinate and depth FIFOs, with command-specific saturation recorded in FLAG. MFC2 and CFC2 have a one-instruction GPR load delay."
+  consequence: "software/psx/gte.c implements the register transfers and these six coordinate-operation families as the first software-GTE subset. It does not yet claim complete lighting/color commands, command latency, or all overflow and saturation edge cases."
+  sources:
+    - "PSX-SPX, Geometry Transformation Engine (GTE), https://psx-spx.consoledev.net/ps1/cpu/gte/geometrytransformationenginegte/"
+    - "PCSX-Redux commit 80d78dd693be4d8c5fd832825d934c5e59e0a6dd, src/core/gte-instructions.cc, gte-internal.h, and gte-transfer.cc, https://github.com/grumpycoders/pcsx-redux"
+  verification: "Six generated GTE vectors covering normal-range MVMVA, RTPS, RTPT, NCLIP, AVSZ3, and AVSZ4 produced 31 expected register results both natively and on the AE350 in core-log entry 23. No original PlayStation hardware comparison was made, so this reverse-engineered behavior remains INFERRED."
 
 - record_id: TOOL-006
   kind: TOOLCHAIN

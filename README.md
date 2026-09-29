@@ -108,6 +108,34 @@ The last command resets the AE350, waits for the ROM checks and loader to become
 ready again, then streams the program. `python3 tools/ae350_run.py status`
 prints the loader, stream, result-register, and firmware-log state.
 
+## R3000A and software GTE diagnostic
+
+`psx_diag.tpx` is the first PlayStation execution component running bare-metal
+on the 750 MHz AE350. It contains a portable MIPS I interpreter with R3000A
+load-delay, branch-delay, exception EPC/BD, COP0, and COP2 behavior, plus the
+initial software GTE coordinate path. The GTE subset implements register
+transfers, MVMVA, RTPS, RTPT, NCLIP, AVSZ3, and AVSZ4; command latency, the
+lighting/color commands, and saturation edge cases outside the generated
+vectors remain future work and this diagnostic is not yet a BIOS-capable
+machine emulator.
+
+The PC-side generator emits nine CPU and six GTE cases. The native regression
+checks 96 deterministic results and deliberately mutates ADDU to prove that
+the vectors detect a bad interpreter. Build and test with:
+
+```sh
+python3 tests/test_psx_diag.py
+scripts/build-programs.sh psx_diag
+```
+
+Upload `build/programs/psx_diag/psx_diag.tpx` from the TangCore main menu, load
+the Gate 1 image, then run `python3 tools/ae350_run.py run psx_diag.tpx`. A pass
+returns `0x3000a001`, publishes stage `0x80003001`, 96 passed checks, vector
+state checksum `0x9349f3af`, and changes HDMI to a green `PSX CPU / GTE PASS`
+card. The generated vector set itself has CRC-32 `0xc2527637`. A
+failure instead draws a red `GTE FAIL` card and puts the vector/check selector,
+expected value, and observed value in the standard failure registers.
+
 ## HDMI framebuffer output
 
 Gate 1 scans a contiguous 640x480 RGB565 framebuffer from `0x7ff00000` in
