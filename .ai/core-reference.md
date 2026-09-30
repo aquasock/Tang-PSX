@@ -115,6 +115,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How much of a system-clock cycle do the AE350 macro's RAM-port inputs need? | AE350 | AE350-006 |
 | Which PLL output clocks the AE350 core? | AE350 | AE350-007 |
 | Does this board's A25 have hardware cache prefetch? | AE350 | AE350-008 |
+| What does an AE350 cache miss to DDR3 cost? | AE350 | AE350-009 |
 | Which CPU semantics must the R3000A interpreter preserve? | PSXCPU | PSXCPU-001 |
 | Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
 | How are PlayStation GPU commands, status, transfers, drawing, and VRAM laid out? | PSXGPU | PSXGPU-001 |
@@ -163,6 +164,7 @@ AE350-006: "Gowin's timing model gives the AE350_SOC RAM-port (DDR_H*) inputs ab
 AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32 B lines, inferred), mmsc_cfg = 0x2007F039; fence.i makes D-cache stores visible to instruction fetch"
 AE350-007: "The A25 core runs at the frequency of PLL_R[0] CLKOUT1, whatever the netlist connects to CORE_CLK; put the CPU clock on CLKOUT1"
 AE350-008: "mcache_ctl bits 9 (IC_PREFETCH_EN) and 10 (DC_PREFETCH_EN) read back 0 after csrs on this board's A25: no hardware cache prefetch"
+AE350-009: "A D-cache miss to DDR3 costs about 570 core cycles (760 ns) through the Gate 1 RAM path, with no overlap between misses; a hit costs about 3"
 PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
 GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
 GTE-002: "Lighting/color commands chain LLM, BK+LCM, RGBC multiply, and FC depth cue through 44-bit MACs and push MAC/16 to the color FIFO"
@@ -445,6 +447,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
   sources:
     - "AE350-002 (mcache_ctl bit assignments)"
   verification: "software/programs/psx_disc built with the csrs and a read-back logged mcache_ctl 3 on hardware on 2026-09-29 (core-log entry 41)."
+
+- record_id: AE350-009
+  kind: PROCESSOR
+  topic_id: AE350
+  title: "AE350 D-cache miss cost to DDR3 through the Gate 1 RAM path"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "With the loader's cache settings (mcache_ctl 0x3) on the entry 37 core, software/programs/memlat measured, in 750 MHz core cycles per access: 3.2 for dependent loads within 16 KiB; 568 and 570 for dependent loads over random 32-byte lines of 256 KiB and 4 MiB; 552 per line for consecutive independent loads over 4 MiB, so misses do not overlap; and 637 per line for stores over 4 MiB, including write-back of the evicted dirty line."
+  consequence: "A miss costs about 760 ns, about 57 cycles of the 75 MHz system clock, of which moving a 32-byte line over the 64-bit RAM port needs four; the rest is latency in the RAM bridge, the burst converter, the 75-to-100 MHz crossing, the arbiters and the Gowin controller. Reducing it, or serving misses from an FPGA-side cache, speeds up all AE350 code without changing its results."
+  sources:
+    - "software/programs/memlat/main.c"
+  verification: "Measured on hardware on 2026-09-29 (core-log entry 42)."
 
 - record_id: PSXCPU-001
   kind: PROCESSOR

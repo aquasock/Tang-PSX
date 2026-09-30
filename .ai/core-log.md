@@ -1426,3 +1426,33 @@ None.
 - User Test: N/A
 
 ---
+
+## 42 COMMIT Unreleased 2026-09-29T19:22:30-07:00
+
+#### Coming From:
+
+Unreleased 65a944f
+
+#### Purpose:
+
+Measure the cost of an AE350 cache miss to DDR3, as the user approved, to size the memory path as a lever for CPU emulation speed.
+
+#### Outcome:
+
+An AE350 D-cache miss to DDR3 costs about 570 core cycles, making memory latency a major lever for CPU speed that needs no change to Lightrec or emulation. The new `software/programs/memlat` flushes the D-cache and then times, in 750 MHz core cycles per access, dependent loads along a random single cycle of 32-byte lines, consecutive independent line loads, and one store per line. Its image (payload 1,082 bytes, CRC-32 `0c088000`) ran on the entry 37 core and returned `0x3e3a7001`, reporting 3.2 cycles for 16 KiB, 568 for 256 KiB and 570 for 4 MiB of dependent loads, 552 per line for consecutive independent loads, which shows that misses do not overlap, and 637 per line for stores including write-back (AE350-009). That is about 760 ns or 57 cycles of the 75 MHz system clock per miss, of which the 64-bit RAM port needs four to move a line, so most of it is latency in the RAM bridge, burst converter, 75-to-100 MHz crossing, arbiters and Gowin controller. With the instruction counts of entry 35, misses plausibly account for a large share of Lightrec's 17.2 ms per VBlank from entry 40 and of the glue's roughly 1,000 cycles per call, but that share was not measured. No gateware changed and the user test is not applicable to this measurement. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including AE350-009, validated this entry as number 42 with exactly six required sections, confirmed that 42 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. The recommended next step is to measure where the roughly 57 system cycles of a miss are spent along the AE350 RAM path, by simulation or latency counters, then decide between trimming that path and adding an FPGA-side L2 cache in block RAM on the AE350 RAM port; GPU step 2a from entry 39 would share the findings about the memory path.
+
+#### Files Modified:
+
+- software/programs/memlat/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
