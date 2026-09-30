@@ -41,6 +41,20 @@ static void accel_push(uint32_t value)
 #else
 static volatile uint32_t *const accel =
 	(volatile uint32_t *)(uintptr_t)GPU_ACCEL_BASE;
+static struct psx_gpu_accel_stats accel_stats;
+
+static inline uint64_t accel_cycle(void)
+{
+	uint32_t high;
+	uint32_t low;
+	uint32_t check;
+	do {
+		__asm__ volatile ("rdcycleh %0" : "=r"(high));
+		__asm__ volatile ("rdcycle %0" : "=r"(low));
+		__asm__ volatile ("rdcycleh %0" : "=r"(check));
+	} while (high != check);
+	return ((uint64_t)high << 32) | low;
+}
 static _Alignas(32) uint32_t accel_buffer[2][GPU_ACCEL_BUFFER_WORDS];
 static uint32_t accel_buffer_index;
 static uint32_t accel_buffer_words;
@@ -49,8 +63,10 @@ static uint32_t accel_expected_primitives;
 static void cache_writeback_invalidate(void)
 {
 	uint32_t command = 6u;
+	uint64_t start = accel_cycle();
 	__asm__ volatile ("fence rw, rw\n\tcsrw 0x7cc, %0\n\tfence rw, rw"
 		: : "r"(command) : "memory");
+	accel_stats.flush_cycles += accel_cycle() - start;
 }
 
 static int accel_available(void)
@@ -58,8 +74,10 @@ static int accel_available(void)
 	return accel[0] == GPU_ACCEL_MAGIC;
 }
 
+/* The fabric is idle here; its counters restart with the reset. */
 static void accel_reset(void)
 {
+	accel_stats.pixels += accel[3];
 	accel[1] = 1u;
 	accel_expected_primitives = 0;
 }
@@ -67,6 +85,7 @@ static void accel_reset(void)
 static void accel_finish_primitive(void)
 {
 	++accel_expected_primitives;
+	++accel_stats.primitives;
 }
 
 static void accel_submit(void)
@@ -84,6 +103,7 @@ static void accel_submit(void)
 
 static void accel_wait(void)
 {
+	uint64_t start = accel_cycle();
 	accel_submit();
 	/* A ready transition can be shorter than one peripheral read.  The
 	 * completed-primitive counter is level-sensitive and proves every queued
@@ -93,6 +113,7 @@ static void accel_wait(void)
 	while (!(accel[1] & 2u))
 		;
 	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	accel_stats.wait_cycles += accel_cycle() - start;
 }
 
 static void accel_push(uint32_t value)
@@ -101,9 +122,16 @@ static void accel_push(uint32_t value)
 	 * but physical testing showed its first cache-backed batch can arrive
 	 * stale.  The registered MMIO word path is exact and already proven on
 	 * hardware. */
-	while (!(accel[1] & 1u))
-		;
+	uint64_t start = accel_cycle();
+	if (!(accel[1] & 1u)) {
+		uint64_t stall = accel_cycle();
+		while (!(accel[1] & 1u))
+			;
+		accel_stats.stall_cycles += accel_cycle() - stall;
+	}
 	accel[0] = value;
+	++accel_stats.words;
+	accel_stats.push_cycles += accel_cycle() - start;
 }
 #endif
 
@@ -924,5 +952,16 @@ void psx_gpu_sync(struct psx_gpu *gpu)
 	}
 #else
 	(void)gpu;
+#endif
+}
+
+void psx_gpu_accel_stats(struct psx_gpu_accel_stats *stats)
+{
+#if PSX_GPU_ACCEL && !PSX_GPU_ACCEL_TEST
+	*stats = accel_stats;
+	if (accel_available())
+		stats->pixels += accel[3];
+#else
+	*stats = (struct psx_gpu_accel_stats){0};
 #endif
 }

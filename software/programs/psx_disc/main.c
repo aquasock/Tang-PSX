@@ -201,6 +201,25 @@ static uint32_t run_cpu(void)
 #endif
 }
 
+/*
+ * Fabric-feed cost every 5 s into the 128-byte log ring, in milliseconds and
+ * thousands: push (MMIO feed, s = part stalled on a full FIFO), w = drain
+ * waits, f = D-cache flushes, n = words pushed, t = primitives, x = pixels.
+ */
+static void log_gpu_stats(void)
+{
+	struct psx_gpu_accel_stats stats;
+	psx_gpu_accel_stats(&stats);
+	log_decimal("G p", profile_ms(stats.push_cycles));
+	log_decimal(" s", profile_ms(stats.stall_cycles));
+	log_decimal(" w", profile_ms(stats.wait_cycles));
+	log_decimal(" f", profile_ms(stats.flush_cycles));
+	log_decimal(" n", stats.words / 1000u);
+	log_decimal(" t", stats.primitives / 1000u);
+	log_decimal(" x", stats.pixels / 1000u);
+	log_text("\n");
+}
+
 static void publish(void)
 {
 	api->set_reg(TPX_REG_WORDS, machine.cpu.cycles);
@@ -292,6 +311,8 @@ uint32_t main(const struct tpx_api *loader)
 			break;
 		}
 		if (elapsed_ms() >= next_publish) {
+			if (next_publish % 5000u == 0u)
+				log_gpu_stats();
 			publish();
 			api->set_reg(TPX_REG_STAGE,
 				0x00020000u | (machine.vblanks & 0xffffu));

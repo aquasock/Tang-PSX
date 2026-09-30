@@ -55,4 +55,20 @@ uint32_t psx_gpu_read_status(const struct psx_gpu *gpu);
 /* Drain fabric rendering and invalidate cached VRAM before CPU reads it. */
 void psx_gpu_sync(struct psx_gpu *gpu);
 
+/*
+ * Cumulative cost of feeding the fabric rasterizer (PSX_GPU_ACCEL builds on
+ * the AE350; zero otherwise). Cycles are AE350 rdcycle counts; push includes
+ * the part stalled on a full fabric FIFO.
+ */
+struct psx_gpu_accel_stats {
+	uint64_t push_cycles;
+	uint64_t stall_cycles;
+	uint64_t wait_cycles;
+	uint64_t flush_cycles;
+	uint32_t words;
+	uint32_t primitives;
+	uint32_t pixels;
+};
+void psx_gpu_accel_stats(struct psx_gpu_accel_stats *stats);
+
 #endif

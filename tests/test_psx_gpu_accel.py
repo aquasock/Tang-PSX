@@ -11,7 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ("psx_gpu_reset", "psx_gpu_write_gp0", "psx_gpu_write_gp1",
-          "psx_gpu_read_data", "psx_gpu_read_status", "psx_gpu_sync")
+          "psx_gpu_read_data", "psx_gpu_read_status", "psx_gpu_sync",
+          "psx_gpu_accel_stats")
 
 
 def main() -> int:

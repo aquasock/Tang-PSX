@@ -1331,3 +1331,36 @@ Reevaluate with the user; Lightrec is now the CPU core, but gameplay is not yet 
 - User Test: PASS
 
 ---
+
+## 39 COMMIT Unreleased 2026-09-29T18:53:35-07:00
+
+#### Coming From:
+
+Unreleased 62868af
+
+#### Purpose:
+
+Measure where the fabric GPU path spends its time during Spyro's intro under Lightrec, as step 1 of the user-approved GPU optimization plan, without changing emulation.
+
+#### Outcome:
+
+The fabric rasterizer's pixel rate is the dominant GPU cost, confirming it as the first optimization target. `software/psx/gpu.c` now accumulates, for `PSX_GPU_ACCEL` builds only, the AE350 cycles spent in `accel_push` and the part of them stalled on a full fabric FIFO, in drain waits, and in D-cache flushes, with counts of words pushed, primitives, and fabric-written pixels summed across the driver's fabric resets, and exposes them through `psx_gpu_accel_stats`; `software/programs/psx_disc/main.c` logs them every 5 s, and `tests/test_psx_gpu_accel.py` renames the new function in its reference build. The fabric comparison still matches in 33,271,453 cycles and the software GPU and BIOS checkpoints pass. On the entry 37 core, `psx_disc_lightrec.tpx` (payload 812,728 bytes, CRC-32 `ce6148a9`) ran Spyro's intro from VBlank 1,715 to 2,676 in 67.0 s, 14.3 VBlanks per second against 14.6 uninstrumented in entry 38. Of that time the AE350 spent 36.8 s in GPU work: 22.4 s stalled on a full fabric FIFO, 6.5 s pushing 20.9 million words at about 313 ns each (48 words for each of 436,000 primitives), 0.1 s draining and flushing, and 7.8 s parsing GP0 and setting up primitives. CPU emulation outside the GPU took 19.2 s, the display copy 8.8 s, and the rest 2.2 s. The fabric wrote 106 million pixels, about 110,000 per VBlank, so even if continuously busy it averaged at most about 1.6 million pixels per second, about 47 cycles of its 75 MHz clock per pixel, against a best case of about 12 cycles in its state machine, which places most of the cost in DDR3 misses of its two-line cache; full speed at this load needs well over 6.6 million pixels per second. No gateware changed and the user test is not applicable to this measurement. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 39 with exactly six required sections, confirmed that 39 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Design step 2 for user approval: a pipelined fabric rasterizer that starts a pixel on most clocks, with an on-chip CLUT and a multi-line block-RAM texture cache, bit-exact with the current one under `tests/test_psx_gpu_accel.py` and built to close timing. Then reduce the 48-word feed by moving triangle setup into the fabric and batching submission, and later consider dedicated SDRAM VRAM with hardware scanout. Leave the CPU emulation unchanged until the GPU path is optimized, as the user directed.
+
+#### Files Modified:
+
+- software/programs/psx_disc/main.c
+- software/psx/gpu.c
+- software/psx/gpu.h
+- tests/test_psx_gpu_accel.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
