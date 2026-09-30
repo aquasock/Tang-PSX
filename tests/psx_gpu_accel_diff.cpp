@@ -4,6 +4,12 @@
 // produces descriptors through its test hook, a second copy draws the same
 // GP0 stream in software, and this harness requires identical VRAM after every
 // primitive.
+//
+// With arguments TRACE FIRST LAST it replays a GPU trace recorded by
+// tests/psx_disc_cores_rv32.c (GPU_TRACE) instead: both copies draw in
+// software until VBlank FIRST, the fabric draws from then on, VRAM must match
+// at every VBlank through LAST, and the fabric's clocks per pixel over that
+// window are reported.
 
 #include <cstdint>
 #include <cstdio>
@@ -12,10 +18,17 @@
 #include <vector>
 
 #include "Vgpu_rasterizer.h"
+#ifdef STATE_HISTOGRAM
+// Clocks spent in each rasterizer state, from Verilator's internal signal.
+#include "Vgpu_rasterizer___024root.h"
+static unsigned long long state_clocks[64];
+#endif
 #include "gpu.h"
 
 void ref_gpu_reset(struct psx_gpu *, uint16_t *);
 void ref_gpu_write_gp0(struct psx_gpu *, uint32_t);
+void ref_gpu_write_gp1(struct psx_gpu *, uint32_t);
+uint32_t ref_gpu_read_data(struct psx_gpu *);
 
 int psx_gpu_accel_test_available = 1;
 static std::vector<uint32_t> descriptors;
@@ -31,6 +44,11 @@ static constexpr uint32_t VRAM_NATIVE_BASE = 0x1ff0000u;
 static struct psx_gpu accelerated, reference;
 static uint16_t accelerated_vram[PSX_VRAM_PIXELS];
 static uint16_t reference_vram[PSX_VRAM_PIXELS];
+// Clocks from a read command to its data; the board's DDR3 path is about 30.
+#ifndef READ_LATENCY
+#define READ_LATENCY 1
+#endif
+
 static uint32_t random_state = 0x6157a11du;
 
 static uint32_t random32()
@@ -50,6 +68,7 @@ class RasterModel {
 public:
 	Vgpu_rasterizer dut;
 	bool read_valid = false;
+	uint32_t read_delay = 0;
 	uint32_t read_words[8]{};
 	bool write_pending = false;
 	uint32_t write_address = 0;
@@ -119,12 +138,17 @@ public:
 		const uint32_t enables = dut.mem_wdata_we;
 		const bool read_consumed = read_valid && dut.mem_rdata_ready;
 
+#ifdef STATE_HISTOGRAM
+		++state_clocks[dut.rootp->gpu_rasterizer__DOT__state & 63];
+#endif
 		dut.clk = 1;
 		dut.eval();
 		++cycles;
 
 		if (read_consumed)
 			read_valid = false;
+		if (read_delay && --read_delay == 0)
+			read_valid = true;
 		if (command) {
 			if (command_write) {
 				if (write_pending) {
@@ -134,12 +158,15 @@ public:
 				write_pending = true;
 				write_address = command_address;
 			} else {
-				if (read_valid) {
+				if (read_valid || read_delay) {
 					std::fprintf(stderr, "overlapping raster reads\n");
 					std::exit(2);
 				}
 				load_line(command_address, read_words);
-				read_valid = true;
+				if (READ_LATENCY <= 1)
+					read_valid = true;
+				else
+					read_delay = READ_LATENCY - 1;
 			}
 		}
 		if (write_data) {
@@ -166,7 +193,7 @@ public:
 			tick();
 			if (accepted)
 				++index;
-			if (++watchdog > 2000000u) {
+			if (++watchdog > 100000000u) {
 				std::fprintf(stderr, "raster timeout with %zu/%zu descriptor words\n",
 					index, descriptors.size());
 				std::exit(2);
@@ -245,10 +272,89 @@ static void random_rectangle()
 	both(width | (height << 16));
 }
 
-int main()
+static void print_states()
+{
+#ifdef STATE_HISTOGRAM
+	static const char *const names[] = {
+		"IDLE", "LOAD", "TRI_INIT", "RECT_INIT", "PIXEL", "LOOKUP",
+		"READ_CMD", "READ_WAIT", "TEX_PACKED", "TEX_CLUT", "TEX_READY",
+		"MASK_READY", "PIXEL_COMMIT", "FLUSH_CMD", "FLUSH_DATA", "FINISH",
+		"DONE", "TEX_MULT", "TEX_SHADE"};
+	unsigned long long total = 0;
+	for (unsigned n = 0; n < 64; ++n)
+		total += state_clocks[n];
+	for (unsigned n = 0; n < sizeof(names) / sizeof(names[0]); ++n)
+		std::printf("  %-12s %12llu %5.1f%%\n", names[n], state_clocks[n],
+			total ? 100.0 * state_clocks[n] / total : 0.0);
+#endif
+}
+
+static int replay(const char *path, uint32_t first, uint32_t last)
+{
+	FILE *file = std::fopen(path, "rb");
+	uint32_t record[2];
+	uint64_t cycles = 0;
+	uint32_t pixels = 0;
+	uint32_t frames = 0;
+	if (!file) {
+		std::fprintf(stderr, "cannot open %s\n", path);
+		return 2;
+	}
+	accelerated.hardware_accel = 0;
+	while (std::fread(record, sizeof(record), 1, file) == 1) {
+		if (record[0] == 0) {
+			last_command = record[1];
+			both(record[1]);
+			if (!descriptors.empty())
+				raster.run_descriptors();
+		} else if (record[0] == 1) {
+			psx_gpu_write_gp1(&accelerated, record[1]);
+			ref_gpu_write_gp1(&reference, record[1]);
+		} else if (record[0] == 2) {
+			uint32_t a = psx_gpu_read_data(&accelerated);
+			uint32_t b = ref_gpu_read_data(&reference);
+			if (a != b || a != record[1]) {
+				std::fprintf(stderr, "GPUREAD %08x/%08x, recorded %08x\n",
+					a, b, record[1]);
+				return 1;
+			}
+		} else if (record[1] == first) {
+			accelerated.hardware_accel = 1;
+#ifdef STATE_HISTOGRAM
+			std::memset(state_clocks, 0, sizeof(state_clocks));
+#endif
+			cycles = raster.cycles;
+			pixels = raster.dut.pixels;
+		} else if (record[1] > first) {
+			++frames;
+			if (std::memcmp(accelerated_vram, reference_vram,
+			    sizeof(accelerated_vram)) != 0) {
+				std::fprintf(stderr, "fabric mismatch at VBlank %u\n", record[1]);
+				return 1;
+			}
+			if (record[1] == last)
+				break;
+		}
+	}
+	std::fclose(file);
+	cycles = raster.cycles - cycles;
+	pixels = raster.dut.pixels - pixels;
+	std::printf("replay VBlank %u-%u: %u frames match, %u pixels in %llu clocks, "
+		"%.2f clocks per pixel, %.0f clocks per VBlank (read latency %u)\n",
+		first, last, frames, pixels, (unsigned long long)cycles,
+		pixels ? (double)cycles / pixels : 0.0,
+		frames ? (double)cycles / frames : 0.0, (unsigned)READ_LATENCY);
+	print_states();
+	return frames ? 0 : 1;
+}
+
+int main(int argc, char **argv)
 {
 	ref_gpu_reset(&reference, reference_vram);
 	psx_gpu_reset(&accelerated, accelerated_vram);
+	if (argc == 4)
+		return replay(argv[1], (uint32_t)std::strtoul(argv[2], 0, 0),
+			(uint32_t)std::strtoul(argv[3], 0, 0));
 	for (uint32_t n = 0; n < PSX_VRAM_PIXELS; ++n) {
 		uint16_t value = (uint16_t)random32();
 		accelerated_vram[n] = value;
@@ -279,5 +385,9 @@ int main()
 	}
 	std::printf("PSX fabric GPU: 40000 random polygons/rectangles match in %llu cycles\n",
 		(unsigned long long)raster.cycles);
+	print_states();
+	std::printf("read latency %u: %u pixels, %.2f clocks per pixel\n",
+		(unsigned)READ_LATENCY, (unsigned)raster.dut.pixels,
+		(double)raster.cycles / raster.dut.pixels);
 	return 0;
 }

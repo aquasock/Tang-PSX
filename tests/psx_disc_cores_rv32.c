@@ -19,6 +19,12 @@
 // Built natively (no __riscv), the same harness uses libc and an executable
 // mmap code buffer, so Lightrec runs on upstream GNU Lightning's host backend
 // instead of the RV32 port.
+//
+// GPU_TRACE="file" (native builds) records the machine's GPU traffic for
+// tests/psx_gpu_accel_diff.cpp to replay: 8-byte little-endian records of a
+// tag (0 GP0 write, 1 GP1 write, 2 GPUREAD read, 3 VBlank) and a value.
+// machine.c must be compiled with -Dpsx_gpu_write_gp0=gpu_trace_gp0,
+// -Dpsx_gpu_write_gp1=gpu_trace_gp1 and -Dpsx_gpu_read_data=gpu_trace_read.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -49,6 +55,37 @@ static uint16_t psx_vram[PSX_VRAM_PIXELS];
 static uint8_t code_buffer[CODE_BUFFER_BYTES] __attribute__((aligned(4096)));
 #endif
 static struct psx_machine machine;
+
+#if defined(GPU_TRACE) && !defined(__riscv)
+static FILE *gpu_trace;
+
+static void trace_record(uint32_t tag, uint32_t value)
+{
+	uint32_t record[2] = { tag, value };
+	if (!gpu_trace && !(gpu_trace = fopen(GPU_TRACE, "wb")))
+		exit(4);
+	fwrite(record, sizeof(record), 1, gpu_trace);
+}
+
+void gpu_trace_gp0(struct psx_gpu *gpu, uint32_t value)
+{
+	trace_record(0, value);
+	psx_gpu_write_gp0(gpu, value);
+}
+
+void gpu_trace_gp1(struct psx_gpu *gpu, uint32_t value)
+{
+	trace_record(1, value);
+	psx_gpu_write_gp1(gpu, value);
+}
+
+uint32_t gpu_trace_read(struct psx_gpu *gpu)
+{
+	uint32_t value = psx_gpu_read_data(gpu);
+	trace_record(2, value);
+	return value;
+}
+#endif
 #ifdef __riscv
 static long disc_fd;
 
@@ -182,6 +219,9 @@ int main(void)
 		if (psx_machine_waiting_for_vblank(&machine))
 			psx_machine_idle_to(&machine, next_vblank);
 		if ((int32_t)(machine.cpu.cycles - next_vblank) >= 0) {
+#if defined(GPU_TRACE) && !defined(__riscv)
+			trace_record(3, machine.vblanks + 1u);
+#endif
 			psx_machine_vblank(&machine);
 			next_vblank += FRAME_CYCLES;
 		} else {

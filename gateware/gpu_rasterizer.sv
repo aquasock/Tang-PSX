@@ -57,10 +57,7 @@ module gpu_rasterizer #(
         S_FINISH        = 15,
         S_DONE          = 16,
         S_TEX_MULT      = 17,
-        S_TEX_SHADE     = 18,
-        S_ADVANCE       = 19,
-        S_ATTR_NORM     = 20,
-        S_ATTR_COMMIT   = 21;
+        S_TEX_SHADE     = 18;
 
     logic [5:0] state;
     logic [5:0] resume_state;
@@ -85,19 +82,28 @@ module gpu_rasterizer #(
     logic signed [31:0] attr_rx [0:4];
     logic signed [31:0] attr_qy [0:4];
     logic signed [31:0] attr_ry [0:4];
-    logic signed [32:0] attr_sum [0:4];
-    logic signed [31:0] attr_base_q [0:4];
-    logic signed [31:0] attr_norm_r [0:4];
-    logic attr_carry [0:4];
-    logic advance_row;
-    // Registered in S_ATTR_NORM, so they are set exactly in S_ATTR_COMMIT and
-    // drive the 320 attribute clock enables without a state decode.
-    logic attr_commit, row_commit;
+    // Each attribute is q + r/area with r in [0, area), and so are its steps
+    // (qx, rx) and (qy, ry). A step's remainder carries into q exactly when
+    // r + (rx - area) >= 0, so with rx - area and ry - area formed once per
+    // triangle, the next remainder and quotient are each one add and a
+    // select, and a pixel step takes a single clock. Vertex coordinates are
+    // 11-bit signed plus an 11-bit signed offset, so |x|, |y| <= 2048 and
+    // area < 2^25; remainders and r + (rx - area) therefore fit 27 bits,
+    // which shortens the carry chain. Synthesis must keep the per-triangle
+    // constants in flip-flops: as LUT RAM they start the step's longest path.
+    logic signed [31:0] attr_rx_ma [0:4] /* synthesis syn_ramstyle = "registers" */;
+    logic signed [31:0] attr_ry_ma [0:4] /* synthesis syn_ramstyle = "registers" */;
+    logic signed [26:0] over_x [0:4];
+    logic signed [26:0] over_y [0:4];
+    logic signed [31:0] next_x_q [0:4];
+    logic signed [31:0] next_x_r [0:4];
+    logic signed [31:0] next_y_q [0:4];
+    logic signed [31:0] next_y_r [0:4];
     logic [31:0] clut, page;
     logic signed [31:0] current_x, current_y;
     // Registered current_x == max_x and current_y == max_y, updated with
-    // every triangle-mode position change, so S_ADVANCE's attribute enables
-    // do not depend on two 32-bit compares.
+    // every triangle-mode position change, so a step's choice between the
+    // next pixel and the next row does not depend on two 32-bit compares.
     logic x_last, y_last;
 
     logic signed [31:0] rect_x0, rect_y0;
@@ -187,11 +193,84 @@ module gpu_rasterizer #(
         end
     endfunction
 
-    task automatic advance_pixel;
+    // Move to the first pixel of the next row, or finish the triangle.
+    task automatic next_row;
         begin
-            state <= S_ADVANCE;
+            if (y_last) begin
+                state <= S_FINISH;
+            end else begin
+                current_x <= min_x;
+                current_y <= current_y + 1;
+                x_last <= min_x == max_x;
+                y_last <= current_y + 1 == max_y;
+                row_started <= 1'b0;
+                for (int k = 0; k < 3; k = k + 1) begin
+                    row_edge[k] <= row_edge[k] + edge_dy[k];
+                    edge_now[k] <= row_edge[k] + edge_dy[k];
+                end
+                for (int k = 0; k < 5; k = k + 1) begin
+                    attr_row_q[k] <= next_y_q[k];
+                    attr_row_r[k] <= next_y_r[k];
+                    attr_q[k] <= next_y_q[k];
+                    attr_r[k] <= next_y_r[k];
+                end
+                state <= S_PIXEL;
+            end
         end
     endtask
+
+    // Finish the current pixel and move to the next one in the same clock.
+    task automatic advance_pixel;
+        begin
+            if (triangle_mode) begin
+                if (x_last) begin
+                    next_row();
+                end else begin
+                    current_x <= current_x + 1;
+                    x_last <= current_x + 1 == max_x;
+                    for (int k = 0; k < 3; k = k + 1)
+                        edge_now[k] <= edge_now[k] + edge_dx[k];
+                    for (int k = 0; k < 5; k = k + 1) begin
+                        attr_q[k] <= next_x_q[k];
+                        attr_r[k] <= next_x_r[k];
+                    end
+                    state <= S_PIXEL;
+                end
+            end else if (rect_col + 1'b1 >= rect_width) begin
+                if (rect_row + 1'b1 >= rect_height) begin
+                    state <= S_FINISH;
+                end else begin
+                    rect_col <= 0;
+                    rect_row <= rect_row + 1'b1;
+                    current_x <= rect_x0;
+                    current_y <= current_y + 1;
+                    rect_u <= rect_u0;
+                    rect_v <= rect_v + 1'b1;
+                    state <= S_PIXEL;
+                end
+            end else begin
+                rect_col <= rect_col + 1'b1;
+                current_x <= current_x + 1;
+                rect_u <= rect_u + 1'b1;
+                state <= S_PIXEL;
+            end
+        end
+    endtask
+
+    always_comb begin
+        for (int k = 0; k < 5; k = k + 1) begin
+            over_x[k] = attr_r[k][26:0] + attr_rx_ma[k][26:0];
+            over_y[k] = attr_row_r[k][26:0] + attr_ry_ma[k][26:0];
+            next_x_r[k] = over_x[k][26] ?
+                32'(attr_r[k][26:0] + attr_rx[k][26:0]) : 32'(over_x[k]);
+            next_x_q[k] = over_x[k][26] ? attr_q[k] + attr_qx[k] :
+                attr_q[k] + attr_qx[k] + 32'sd1;
+            next_y_r[k] = over_y[k][26] ?
+                32'(attr_row_r[k][26:0] + attr_ry[k][26:0]) : 32'(over_y[k]);
+            next_y_q[k] = over_y[k][26] ? attr_row_q[k] + attr_qy[k] :
+                attr_row_q[k] + attr_qy[k] + 32'sd1;
+        end
+    end
 
     always_comb begin
         cmd_ready = state == S_IDLE || state == S_LOAD;
@@ -304,23 +383,6 @@ module gpu_rasterizer #(
             if (rectangle_load[12]) page <= cmd_data;
         end
 
-        attr_commit <= state == S_ATTR_NORM;
-        row_commit <= state == S_ATTR_NORM && advance_row;
-        if (attr_commit) begin
-            for (n = 0; n < 5; n = n + 1) begin
-                attr_q[n] <= attr_base_q[n] +
-                    (attr_carry[n] ? 32'sd1 : 32'sd0);
-                attr_r[n] <= attr_norm_r[n];
-            end
-        end
-        if (row_commit) begin
-            for (n = 0; n < 5; n = n + 1) begin
-                attr_row_q[n] <= attr_base_q[n] +
-                    (attr_carry[n] ? 32'sd1 : 32'sd0);
-                attr_row_r[n] <= attr_norm_r[n];
-            end
-        end
-
         case (state)
             S_IDLE: begin
                 if (cmd_valid) begin
@@ -369,6 +431,8 @@ module gpu_rasterizer #(
                 for (n = 0; n < 5; n = n + 1) begin
                     attr_q[n] <= attr_row_q[n];
                     attr_r[n] <= attr_row_r[n];
+                    attr_rx_ma[n] <= attr_rx[n] - area;
+                    attr_ry_ma[n] <= attr_ry[n] - area;
                 end
                 state <= S_PIXEL;
             end
@@ -389,9 +453,7 @@ module gpu_rasterizer #(
             S_PIXEL: begin
                 if (triangle_mode && !triangle_inside) begin
                     if (row_started) begin
-                        current_x <= max_x;
-                        x_last <= 1'b1;
-                        state <= S_ADVANCE;
+                        next_row();
                     end else begin
                         advance_pixel();
                     end
@@ -550,80 +612,6 @@ module gpu_rasterizer #(
                     state <= S_PIXEL_COMMIT;
             end
 
-            S_ADVANCE: begin
-                if (triangle_mode) begin
-                    if (x_last) begin
-                        if (y_last) begin
-                            state <= S_FINISH;
-                        end else begin
-                            current_x <= min_x;
-                            current_y <= current_y + 1;
-                            x_last <= min_x == max_x;
-                            y_last <= current_y + 1 == max_y;
-                            row_started <= 1'b0;
-                            for (n = 0; n < 3; n = n + 1) begin
-                                row_edge[n] <= row_edge[n] + edge_dy[n];
-                                edge_now[n] <= row_edge[n] + edge_dy[n];
-                            end
-                            for (n = 0; n < 5; n = n + 1) begin
-                                attr_sum[n] <=
-                                    $signed({1'b0, attr_row_r[n]}) +
-                                    $signed({1'b0, attr_ry[n]});
-                                attr_base_q[n] <=
-                                    attr_row_q[n] + attr_qy[n];
-                            end
-                            advance_row <= 1'b1;
-                            state <= S_ATTR_NORM;
-                        end
-                    end else begin
-                        current_x <= current_x + 1;
-                        x_last <= current_x + 1 == max_x;
-                        for (n = 0; n < 3; n = n + 1)
-                            edge_now[n] <= edge_now[n] + edge_dx[n];
-                        for (n = 0; n < 5; n = n + 1) begin
-                            attr_sum[n] <=
-                                $signed({1'b0, attr_r[n]}) +
-                                $signed({1'b0, attr_rx[n]});
-                            attr_base_q[n] <= attr_q[n] + attr_qx[n];
-                        end
-                        advance_row <= 1'b0;
-                        state <= S_ATTR_NORM;
-                    end
-                end else if (rect_col + 1'b1 >= rect_width) begin
-                    if (rect_row + 1'b1 >= rect_height) begin
-                        state <= S_FINISH;
-                    end else begin
-                        rect_col <= 0;
-                        rect_row <= rect_row + 1'b1;
-                        current_x <= rect_x0;
-                        current_y <= current_y + 1;
-                        rect_u <= rect_u0;
-                        rect_v <= rect_v + 1'b1;
-                        state <= S_PIXEL;
-                    end
-                end else begin
-                    rect_col <= rect_col + 1'b1;
-                    current_x <= current_x + 1;
-                    rect_u <= rect_u + 1'b1;
-                    state <= S_PIXEL;
-                end
-            end
-
-            S_ATTR_NORM: begin
-                for (n = 0; n < 5; n = n + 1) begin
-                    attr_carry[n] <=
-                        attr_sum[n] >= $signed({1'b0, area});
-                    attr_norm_r[n] <=
-                        attr_sum[n] >= $signed({1'b0, area}) ?
-                        attr_sum[n][31:0] - area : attr_sum[n][31:0];
-                end
-                state <= S_ATTR_COMMIT;
-            end
-
-            S_ATTR_COMMIT: begin
-                state <= S_PIXEL;
-            end
-
             S_PIXEL_COMMIT: begin
                 if (out_valid && out_addr !=
                     VRAM_WORD_BASE + {{(ADDR_BITS-15){1'b0}},
@@ -686,8 +674,6 @@ module gpu_rasterizer #(
             cache_replace <= 1'b0;
             triangle_load <= '0;
             rectangle_load <= '0;
-            attr_commit <= 1'b0;
-            row_commit <= 1'b0;
         end
     end
 endmodule

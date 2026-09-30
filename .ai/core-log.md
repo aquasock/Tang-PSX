@@ -1526,3 +1526,37 @@ Reevaluate with the user. The L2's hit cost could fall further by streaming the 
 - User Test: PASS
 
 ---
+
+## 45 COMMIT Unreleased 2026-09-29T22:49:37-07:00
+
+#### Coming From:
+
+Unreleased 582be08
+
+#### Purpose:
+
+Make the fabric rasterizer step to the next pixel in one clock, the user-approved revision of GPU step 2a after a replay of Spyro's GPU traffic showed stepping, not DDR3 misses, to be its main cost.
+
+#### Outcome:
+
+The rasterizer now steps in one clock instead of four, which made the SCPH-1001 logo 1.85 times as fast as entry 36 and Spyro's intro about 9 percent faster than with the L2 alone. `tests/psx_disc_cores_rv32.c` gained `GPU_TRACE`, which records a native build's GP0 and GP1 writes, GPUREAD reads and VBlanks; the native Lightrec harness recorded Spyro's first 2,519 VBlanks (7,540,496 GP0 words) in 2.3 s. `tests/psx_gpu_accel_diff.cpp` gained a replay mode that draws in software up to a chosen VBlank, draws with the Verilated rasterizer after it and compares VRAM at every VBlank, a `READ_LATENCY` memory model and a `STATE_HISTOGRAM` report, selected by `--trace`, `--first`, `--last`, `--read-latency` and `--histogram` in `tests/test_psx_gpu_accel.py`; the default random check is unchanged and its watchdog now allows 100 million clocks. On the random primitives at a 30-clock read latency the rasterizer took 67.3 clocks per pixel, 61 percent of them waiting for reads, while on Spyro's intro from VBlank 1,700 to 1,760 it took 15.7 clocks per pixel, 108,000 pixels per VBlank, with 59 percent of its clocks in the four stepping states, 33 percent of them stepping over bounding-box pixels outside the triangle, and 19 percent waiting for reads at 0.1 reads per pixel. The texture and CLUT caches of entry 39 were therefore deferred. `gateware/gpu_rasterizer.sv` now forms `rx - area` and `ry - area` per triangle, computes each next remainder with one add and a select and each next quotient from two parallel adds, and commits a step in the clock that finishes the pixel, so `ADVANCE`, `ATTR_NORM` and `ATTR_COMMIT` are gone; the replay then took 8.78 clocks per pixel and the random check 16.26 at a one-clock latency, both matching exactly. The first build failed on every placement (best `sys_clk` 69.090 MHz) because synthesis put `attr_rx_ma` and `attr_ry_ma` in LUT RAM and a marginal path ran from the DDR3 write-data crossing's full flag through both arbiters into the rasterizer. Keeping those arrays in registers, narrowing the remainder arithmetic to 27 bits (coordinates are 11-bit signed plus an 11-bit signed offset, so area is below 2^25 and the result stays exact), and a registered write-data Buffer before the crossing in `gateware/gowin_ddr3.py` let placement option 3 meet timing, with Fmax 75.660 MHz for the 75 MHz `sys_clk`, 115.523 MHz for `ddr_clk`, 72.220 MHz for the 50 MHz board clock and 134.076 MHz for the pixel clock, while options 1 and 4 failed `sys_clk` and `ddr_clk` setup and the user cancelled option 2; logic rose from 16 to 20 percent (27,444 LUTs). Its 5,127,164-byte image (SHA-256 `6dbe2e37a3220740ba9b8258eed3f5cd6f019ee08c009c37e4576be3c4c0c822`, CRC-32 `224b386a`) replaced `cores/console138k/tang-psx.bin` with verified readback, and its self-checks passed. The fabric `psx_bios.tpx` (payload CRC-32 `ce2c7eaf`) reproduced the exact logo telemetry in 3,422 ms, with 1,545 ms in the GPU, against 6,342 and 4,158 ms in entry 36. Spyro's intro under Lightrec ran at 16.4 VBlanks per second, 60.8 ms per VBlank with 31.1 ms in GPU work of which 16.1 ms was waiting for the fabric, against 15.0 VBlanks per second and 22.3 ms of waiting with the L2 alone and 14.1 and 25.1 ms with neither, and the boot reached VBlank 1,700 in 86 s against 96 and 118 s; the waiting fell less than the replay predicted, because on hardware the rasterizer's reads and flush writes also wait on the arbiters and other clients. The user accepted the result. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 45 with exactly six required sections, confirmed that 45 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. The `sys_clk` margin is 0.9 percent, so the next GPU change should restore slack. Remaining GPU levers are decoupling the stepper from pixel processing so that outside-triangle steps overlap other work, the texture and CLUT caches for the read waits, a deeper descriptor FIFO or batched feed for the 48 words per primitive, and hardware scanout for the 9.3 ms display copy; the replay also cannot model arbiter contention, so hardware measurements remain the arbiter of each change.
+
+#### Files Modified:
+
+- gateware/gowin_ddr3.py
+- gateware/gpu_rasterizer.sv
+- tests/psx_disc_cores_rv32.c
+- tests/psx_gpu_accel_diff.cpp
+- tests/test_psx_gpu_accel.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

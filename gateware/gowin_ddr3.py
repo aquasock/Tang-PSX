@@ -236,9 +236,15 @@ class GowinDDR3(LiteXModule, AutoCSR):
         self.cdc = LiteDRAMNativePortCDC(cdc_port, ddr_port)
         self.rdata_pipe = rdata_pipe = stream.Buffer(cdc_port.rdata.description,
             pipe_valid=True, pipe_ready=True)
+        # Likewise a registered write-data stage keeps the crossing FIFO's
+        # gray-code full flag out of every client's write-data ready path,
+        # which runs through both arbiters into the fabric rasterizer.
+        self.wdata_sys_pipe = wdata_sys_pipe = stream.Buffer(
+            cdc_port.wdata.description, pipe_valid=True, pipe_ready=True)
         self.comb += [
             self.port.cmd.connect(cdc_port.cmd),
-            self.port.wdata.connect(cdc_port.wdata),
+            self.port.wdata.connect(wdata_sys_pipe.sink),
+            wdata_sys_pipe.source.connect(cdc_port.wdata),
             cdc_port.rdata.connect(rdata_pipe.sink),
             rdata_pipe.source.connect(self.port.rdata),
         ]
