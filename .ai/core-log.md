@@ -1364,3 +1364,35 @@ Design step 2 for user approval: a pipelined fabric rasterizer that starts a pix
 - User Test: N/A
 
 ---
+
+## 40 COMMIT Unreleased 2026-09-29T19:10:47-07:00
+
+#### Coming From:
+
+Unreleased 404a3fe
+
+#### Purpose:
+
+Split the AE350's CPU-emulation time under Lightrec during Spyro's intro, as the user requested, without changing Lightrec or emulation.
+
+#### Outcome:
+
+Lightrec's own execution is about four fifths of CPU-emulation time, and our glue around it most of the rest. `software/lightrec/psx_lightrec.c` now accumulates host cycles for all of `psx_lightrec_run`, for `lightrec_execute`, and inside it for I/O reads, I/O writes, GTE commands and DMA code invalidation, plus `psx_machine_service`, reported through `struct psx_lightrec_stats` (zero on non-RISC-V hosts); `software/programs/psx_disc/main.c` logs them every 5 s in Lightrec builds. `tests/test_lightrec_rv32.py` and `tests/test_psx_bios_lightrec.py` pass with unchanged telemetry, although generated code shrank by 8 bytes to 348,652 because the glue's callback addresses moved. On the entry 37 core, `psx_disc_lightrec.tpx` (payload 815,008 bytes, CRC-32 `2da73e3a`) ran Spyro's intro from VBlank 1,687 to 2,633 in 67.0 s, with 56.0 s in CPU emulation including 36.1 s of GPU work, leaving 19.9 s, about 1.26 s per emulated second, against 1.20 in entry 39. Of that, `lightrec_execute` outside its callbacks took about 16.2 s, 17.2 ms per VBlank and alone above the 16.7 ms of a real-time VBlank, with only 62 blocks compiled in the window; GTE commands took 1.1 s, I/O reads 0.2 s, device service 0.4 s and DMA invalidation nothing after loading. The loop around Lightrec took about 3.0 s: 1.1 s inside `psx_lightrec_run` outside execute and service, and 1.9 s between the program's timer and the function's own, which with about 2,200 calls per VBlank is roughly 1,000 AE350 cycles per call and suggests instruction-cache misses on the glue after Lightrec code runs. The components exceed the total by about 1 s because some GPU time is recorded outside the I/O-write timer. `mcache_ctl` reads `0x3` (entry 18), so the A25's instruction and data prefetch (AE350-002 bits 9 and 10) are disabled. No gateware changed and the user test is not applicable to this measurement. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 40 with exactly six required sections, confirmed that 40 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Propose to the user a hardware run with the A25 instruction and data prefetch enabled, which changes neither Lightrec nor emulation results, measured on the same Spyro window. Reducing the glue's per-call cost without changing emulation timing, and optimizing the software GTE bit-exactly, are further CPU-side options; GPU step 2a from entry 39 remains the next GPU work.
+
+#### Files Modified:
+
+- software/lightrec/psx_lightrec.c
+- software/lightrec/psx_lightrec.h
+- software/programs/psx_disc/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

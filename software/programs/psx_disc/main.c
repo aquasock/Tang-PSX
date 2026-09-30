@@ -220,6 +220,27 @@ static void log_gpu_stats(void)
 	log_text("\n");
 }
 
+#ifdef PSX_LIGHTREC
+/*
+ * CPU-emulation cost every 5 s, in milliseconds: R = psx_lightrec_run,
+ * E = lightrec_execute (including r and w I/O callbacks, g GTE commands and
+ * i DMA code invalidation), s = device service; c = compiled blocks.
+ */
+static void log_cpu_stats(void)
+{
+	const struct psx_lightrec_stats *stats = psx_lightrec_stats();
+	log_decimal("C R", profile_ms(stats->run_cycles));
+	log_decimal(" E", profile_ms(stats->execute_cycles));
+	log_decimal(" r", profile_ms(stats->io_read_cycles));
+	log_decimal(" w", profile_ms(stats->io_write_cycles));
+	log_decimal(" g", profile_ms(stats->gte_cycles));
+	log_decimal(" s", profile_ms(stats->service_cycles));
+	log_decimal(" i", profile_ms(stats->invalidate_cycles));
+	log_decimal(" c", stats->code_emissions);
+	log_text("\n");
+}
+#endif
+
 static void publish(void)
 {
 	api->set_reg(TPX_REG_WORDS, machine.cpu.cycles);
@@ -313,6 +334,10 @@ uint32_t main(const struct tpx_api *loader)
 		if (elapsed_ms() >= next_publish) {
 			if (next_publish % 5000u == 0u)
 				log_gpu_stats();
+#ifdef PSX_LIGHTREC
+			if (next_publish % 5000u == 2000u)
+				log_cpu_stats();
+#endif
 			publish();
 			api->set_reg(TPX_REG_STAGE,
 				0x00020000u | (machine.vblanks & 0xffffu));

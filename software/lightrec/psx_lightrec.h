@@ -47,6 +47,20 @@ struct psx_lightrec_stats {
 	uint32_t dma_invalidations;
 	uint32_t cache_isolations;
 	uint32_t exit_flags;
+	/*
+	 * Host cycles (rdcycle on RISC-V, zero elsewhere), cumulative. execute
+	 * covers lightrec_execute, including the callbacks below it (io, gte,
+	 * and invalidate, which the RAM-write hook reaches from DMA); service
+	 * is psx_machine_service after each execute; run is all of
+	 * psx_lightrec_run.
+	 */
+	uint64_t run_cycles;
+	uint64_t execute_cycles;
+	uint64_t io_read_cycles;
+	uint64_t io_write_cycles;
+	uint64_t gte_cycles;
+	uint64_t service_cycles;
+	uint64_t invalidate_cycles;
 };
 
 /*

@@ -8,6 +8,26 @@
 #include "psx_lightrec.h"
 #include "runtime.h"
 
+#if defined(__riscv) && __riscv_xlen == 32
+static inline uint64_t host_cycle(void)
+{
+	uint32_t high;
+	uint32_t low;
+	uint32_t check;
+	do {
+		__asm__ volatile ("rdcycleh %0" : "=r"(high));
+		__asm__ volatile ("rdcycle %0" : "=r"(low));
+		__asm__ volatile ("rdcycleh %0" : "=r"(check));
+	} while (high != check);
+	return ((uint64_t)high << 32) | low;
+}
+#else
+static inline uint64_t host_cycle(void)
+{
+	return 0;
+}
+#endif
+
 #define CP0_SR    12
 #define CP0_CAUSE 13
 #define CP0_EPC   14
@@ -85,10 +105,12 @@ static uint32_t io_read(struct lightrec_state *state, uint32_t address,
 	uint32_t bytes)
 {
 	uint32_t value = 0;
+	uint64_t start = host_cycle();
 
 	lr.machine->cpu.cycles = machine_cycles(state);
 	++lr.stats.io_reads;
 	psx_machine_read(lr.machine, address, bytes, &value);
+	lr.stats.io_read_cycles += host_cycle() - start;
 	return value;
 }
 
@@ -96,10 +118,12 @@ static void io_write(struct lightrec_state *state, uint32_t address,
 	uint32_t bytes, uint32_t value)
 {
 	uint32_t *cp0 = lightrec_get_registers(state)->cp0;
+	uint64_t start = host_cycle();
 
 	lr.machine->cpu.cycles = machine_cycles(state);
 	++lr.stats.io_writes;
 	psx_machine_write(lr.machine, address, bytes, value);
+	lr.stats.io_write_cycles += host_cycle() - start;
 	/* A write that raises an enabled interrupt ends the run early. */
 	cp0[CP0_CAUSE] = irq_cause(lr.machine, cp0);
 	if (interrupt_pending(cp0))
@@ -163,8 +187,11 @@ static const struct lightrec_mem_map_ops io_ops = {
 
 static void cop2_op(struct lightrec_state *state, u32 op)
 {
+	uint64_t start = host_cycle();
+
 	++lr.stats.gte_commands;
 	psx_gte_command(gte_registers(state), op);
+	lr.stats.gte_cycles += host_cycle() - start;
 }
 
 static void enable_ram(struct lightrec_state *state, _Bool enable)
@@ -194,9 +221,12 @@ static const struct lightrec_ops ops = {
 
 static void ram_written(void *opaque, uint32_t offset)
 {
+	uint64_t start = host_cycle();
+
 	(void)opaque;
 	++lr.stats.dma_invalidations;
 	lightrec_invalidate(lr.state, offset, 4u);
+	lr.stats.invalidate_cycles += host_cycle() - start;
 }
 
 static void set_map(enum psx_map index, uint32_t pc, uint32_t length,
@@ -271,6 +301,8 @@ uint32_t psx_lightrec_run(struct psx_machine *machine, uint32_t cycles)
 	uint32_t end;
 	uint32_t pc = lr.pc;
 	uint32_t flags = 0;
+	uint64_t run_start = host_cycle();
+	uint64_t host_start;
 
 	if (cycles > 0x7fffffffu)
 		cycles = 0x7fffffffu;
@@ -284,9 +316,13 @@ uint32_t psx_lightrec_run(struct psx_machine *machine, uint32_t cycles)
 			pc = exception(cp0, PSX_EXC_INTERRUPT, pc);
 			++lr.stats.interrupts;
 		}
+		host_start = host_cycle();
 		pc = lightrec_execute(state, pc, end);
+		lr.stats.execute_cycles += host_cycle() - host_start;
 		machine->cpu.cycles = machine_cycles(state);
+		host_start = host_cycle();
 		psx_machine_service(machine);
+		lr.stats.service_cycles += host_cycle() - host_start;
 		flags = lightrec_exit_flags(state);
 		cp0[CP0_CAUSE] = irq_cause(machine, cp0);
 		if ((flags & (LIGHTREC_EXIT_SYSCALL | LIGHTREC_EXIT_BREAK)) &&
@@ -318,6 +354,7 @@ uint32_t psx_lightrec_run(struct psx_machine *machine, uint32_t cycles)
 	machine->cpu.lo = regs->gpr[32];
 	machine->cpu.hi = regs->gpr[33];
 	memcpy(machine->cpu.cp0, cp0, sizeof(machine->cpu.cp0));
+	lr.stats.run_cycles += host_cycle() - run_start;
 	return flags;
 }
 
