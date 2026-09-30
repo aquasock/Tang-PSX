@@ -12,10 +12,20 @@
 // line per emulated second goes to stderr: VBlanks, CD sectors read, GPU
 // words, the guest PC and the Lightrec exit flags. The image is read with
 // qemu-user's Linux system calls. CD_TRACE also logs every CD-ROM command and
-// response with the guest cycle, for comparing cores.
+// response with the guest cycle, for comparing cores. RUN_TRACE prints the
+// guest PC, cycle count and a register checksum after every Lightrec run, so
+// compiled and interpreted runs can be compared line by line.
+//
+// Built natively (no __riscv), the same harness uses libc and an executable
+// mmap code buffer, so Lightrec runs on upstream GNU Lightning's host backend
+// instead of the RV32 port.
 
 #include <stdint.h>
 #include <stdio.h>
+#ifndef __riscv
+#include <stdlib.h>
+#include <sys/mman.h>
+#endif
 
 #include "machine.h"
 #include "runtime.h"
@@ -35,10 +45,11 @@ extern const uint8_t psx_bios_image_end[];
 
 static uint8_t psx_ram[PSX_MAIN_RAM_BYTES] __attribute__((aligned(4096)));
 static uint16_t psx_vram[PSX_VRAM_PIXELS];
-#ifdef PSX_DISC_LIGHTREC
+#if defined(PSX_DISC_LIGHTREC) && defined(__riscv)
 static uint8_t code_buffer[CODE_BUFFER_BYTES] __attribute__((aligned(4096)));
 #endif
 static struct psx_machine machine;
+#ifdef __riscv
 static long disc_fd;
 
 static long syscall5(long number, long a0, long a1, long a2, long a3, long a4)
@@ -84,6 +95,19 @@ static int read_sector(void *opaque, uint32_t lba, uint8_t *sector)
 	}
 	return 0;
 }
+#else
+static FILE *disc_file;
+
+static int read_sector(void *opaque, uint32_t lba, uint8_t *sector)
+{
+	(void)opaque;
+	if (fseek(disc_file, (long)lba * (long)PSX_CD_SECTOR_BYTES, SEEK_SET) ||
+	    fread(sector, 1, PSX_CD_SECTOR_BYTES, disc_file) !=
+	    PSX_CD_SECTOR_BYTES)
+		return -1;
+	return 0;
+}
+#endif
 
 #ifdef CD_TRACE
 static void trace_command(const struct psx_cdrom *cd, uint8_t command,
@@ -117,12 +141,21 @@ int main(void)
 	uint32_t flags = 0;
 	uint32_t second = 0;
 
+#ifdef __riscv
 	disc_fd = syscall5(56, -100 /* AT_FDCWD */, (long)path, 0, 0, 0);
 	if (disc_fd < 0 ||
 	    syscall5(62, disc_fd, 0, 0, (long)&size, 2 /* SEEK_END */) < 0) {
 		fprintf(stderr, "cannot open %s\n", path);
 		return 2;
 	}
+#else
+	disc_file = fopen(path, "rb");
+	if (!disc_file || fseek(disc_file, 0, SEEK_END)) {
+		fprintf(stderr, "cannot open %s\n", path);
+		return 2;
+	}
+	size = (uint64_t)ftell(disc_file);
+#endif
 	psx_machine_reset(&machine, psx_ram, psx_vram, psx_bios_image);
 	disc.read = read_sector;
 	disc.sectors = (uint32_t)(size / PSX_CD_SECTOR_BYTES);
@@ -133,7 +166,14 @@ int main(void)
 	machine.cdrom.trace_response = trace_response;
 #endif
 #ifdef PSX_DISC_LIGHTREC
-	if (psx_lightrec_init(&machine, code_buffer, sizeof(code_buffer))) {
+#ifndef __riscv
+	uint8_t *code_buffer = mmap(NULL, CODE_BUFFER_BYTES,
+		PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS,
+		-1, 0);
+	if (code_buffer == MAP_FAILED)
+		return 3;
+#endif
+	if (psx_lightrec_init(&machine, code_buffer, CODE_BUFFER_BYTES)) {
 		fprintf(stderr, "psx_lightrec_init failed\n");
 		return 3;
 	}
@@ -146,8 +186,46 @@ int main(void)
 			next_vblank += FRAME_CYCLES;
 		} else {
 #ifdef PSX_DISC_LIGHTREC
-			if ((flags = psx_lightrec_run(&machine,
-				  SERVICE_INSTRUCTIONS)))
+#ifdef FINE_FROM
+			/* One block per run from FINE_FROM, to find a divergence. */
+			flags = psx_lightrec_run(&machine,
+				machine.cpu.cycles >= FINE_FROM ? 1u :
+				SERVICE_INSTRUCTIONS);
+#else
+			flags = psx_lightrec_run(&machine, SERVICE_INSTRUCTIONS);
+#endif
+#ifdef RUN_TRACE
+			{
+				uint32_t sum = machine.cpu.hi * 31u + machine.cpu.lo;
+				uint32_t r;
+				for (r = 0; r < 32u; ++r)
+					sum = sum * 31u + machine.cpu.gpr[r];
+				fprintf(stderr, "t %08lx %08lx %08lx lo %08lx sr %08lx "
+					"cause %08lx epc %08lx istat %04lx\n",
+					(unsigned long)machine.cpu.cycles,
+					(unsigned long)machine.cpu.pc,
+					(unsigned long)sum,
+					(unsigned long)machine.cpu.lo,
+					(unsigned long)machine.cpu.cp0[12],
+					(unsigned long)machine.cpu.cp0[13],
+					(unsigned long)machine.cpu.cp0[14],
+					(unsigned long)machine.irq_status);
+#ifdef DUMP_AT
+				if (machine.cpu.cycles == DUMP_AT) {
+					for (r = 0; r < 32u; ++r)
+						fprintf(stderr, "r%lu %08lx\n",
+							(unsigned long)r,
+							(unsigned long)machine.cpu.gpr[r]);
+					fprintf(stderr, "hi %08lx lo %08lx\n",
+						(unsigned long)machine.cpu.hi,
+						(unsigned long)machine.cpu.lo);
+					fwrite(psx_ram, 1, sizeof(psx_ram), stdout);
+					fflush(stdout);
+				}
+#endif
+			}
+#endif
+			if (flags)
 				break;
 #else
 			psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
@@ -174,11 +252,12 @@ int main(void)
 			second % 8u == 7u ? "\n" : " ");
 #ifdef RAM_DUMP
 	/* Main RAM to stdout, for tools/mipsdis.py. */
-	tpx_runtime_write(1, psx_ram, sizeof(psx_ram));
+	fwrite(psx_ram, 1, sizeof(psx_ram), stdout);
 #endif
 	return 0;
 }
 
+#ifdef __riscv
 __asm__(
 	"	.section .text.start,\"ax\",@progbits\n"
 	"	.globl _start\n"
@@ -186,3 +265,4 @@ __asm__(
 	"	call main\n"
 	"	call tpx_runtime_exit\n"
 	"	.text\n");
+#endif

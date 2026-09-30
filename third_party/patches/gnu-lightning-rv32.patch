@@ -9,10 +9,18 @@ by tests/test_lightning_rv32.py (check suite under qemu-riscv32/64).
   doubles), movr_ww_d/movr_d_ww/movi_ww_d emission, 64-bit-only cases and
   the constant pool guarded, 8-byte aligned double callee saves.
 - jit_riscv-cpu.c: word-sized ld/st macros, LUI+ADDI constants, word-relative
-  extension shifts, word-sized variadic save area.
+  extension shifts, word-sized variadic save area. lti, lti_u, gti and gti_u
+  with an immediate outside the 12-bit range loaded it into the destination
+  and compared against an unset temporary, on RV64 as well (still present
+  in GNU Lightning master 7965700); the immediate now goes to the temporary.
+  A conditional branch reached only simm12 bytes, so a forward target
+  patched beyond 2 KiB asserted in _Btype; bcc now branches over a JAL on the
+  inverted condition unless the target is known and in range.
 - jit_riscv-fpu.c: 32-bit int<->FP conversions, double/register-pair moves
   through an allocai'd slot, double constants, aligned va_arg of doubles.
-- jit_riscv-sz.c: RV32 instruction-size table.
+- jit_riscv-sz.c: RV32 instruction-size table. In both tables a register
+  conditional branch is 8 bytes for the bcc long form, other branches allow
+  4 more bytes, and immediate branches 4 more again for a full constant.
 - jit_fallback.c: little-endian 32-bit unldi_x/unsti_x used the high word as
   the lower-address word of the movr_ww_d/movr_d_ww pair (doc/body.texi).
 - lightning.c: without HAVE_MMAP, jit_emit returns NULL when the user code
@@ -57,7 +65,7 @@ index ce7bffd..ec673bc 100644
  	unsti(i0, r2, 4);
  	unsti(i0 + 4, r3, 4);
 diff --git a/lib/jit_riscv-cpu.c b/lib/jit_riscv-cpu.c
-index 8d6115a..f3eac86 100644
+index 8d6115a..58e1a7f 100644
 --- a/lib/jit_riscv-cpu.c
 +++ b/lib/jit_riscv-cpu.c
 @@ -94,14 +94,25 @@ typedef union {
@@ -119,7 +127,16 @@ index 8d6115a..f3eac86 100644
  #  define movr(r0, r1)			MV(r0, r1)
  #  define movi(r0, im)			_movi(_jit, r0, im)
  static void _movi(jit_state_t*,jit_int32_t,jit_word_t);
-@@ -1124,7 +1139,7 @@ _lshi(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+@@ -512,6 +527,8 @@ static void _gti_u(jit_state_t*,jit_int32_t,jit_int32_t,jit_word_t);
+ static void _ner(jit_state_t*,jit_int32_t,jit_int32_t,jit_int32_t);
+ #  define nei(r0, r1, im)		_nei(_jit, r0, r1, im)
+ static void _nei(jit_state_t*,jit_int32_t,jit_int32_t,jit_word_t);
++#  define bcc(fct, rs1, rs2, br)	_bcc(_jit, fct, rs1, rs2, br)
++static jit_word_t _bcc(jit_state_t*,jit_int32_t,jit_int32_t,jit_int32_t,jit_word_t);
+ #  define bltr(br, r0, r1)		_bltr(_jit, br, r0, r1)
+ static jit_word_t _bltr(jit_state_t*,jit_word_t,jit_int32_t,jit_int32_t);
+ #  define blti(br, r0, im)		_blti(_jit, br, r0, im)
+@@ -1124,7 +1141,7 @@ _lshi(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
      if (i0 == 0)
  	movr(r0, r1);
      else {
@@ -128,7 +145,7 @@ index 8d6115a..f3eac86 100644
  	SLLI(r0, r1, i0);
      }
  }
-@@ -1135,7 +1150,7 @@ _rshi(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+@@ -1135,7 +1152,7 @@ _rshi(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
      if (i0 == 0)
  	movr(r0, r1);
      else {
@@ -137,7 +154,7 @@ index 8d6115a..f3eac86 100644
  	SRAI(r0, r1, i0);
      }
  }
-@@ -1146,7 +1161,7 @@ _rshi_u(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+@@ -1146,7 +1163,7 @@ _rshi_u(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
      if (i0 == 0)
  	movr(r0, r1);
      else {
@@ -146,7 +163,7 @@ index 8d6115a..f3eac86 100644
  	SRLI(r0, r1, i0);
      }
  }
-@@ -1343,37 +1358,38 @@ _unsti(jit_state_t *_jit, jit_word_t i0, jit_int32_t r0, jit_word_t i1)
+@@ -1343,37 +1360,38 @@ _unsti(jit_state_t *_jit, jit_word_t i0, jit_int32_t r0, jit_word_t i1)
  static void
  _extr_c(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1)
  {
@@ -192,7 +209,7 @@ index 8d6115a..f3eac86 100644
  	jit_int32_t	lo = (jit_int32_t)i0 << 20 >> 20;
  	jit_int32_t	hi = i0 - lo;
  	if (hi) {
-@@ -1383,10 +1399,19 @@ _movi(jit_state_t *_jit, jit_int32_t r0, jit_word_t i0)
+@@ -1383,10 +1401,19 @@ _movi(jit_state_t *_jit, jit_int32_t r0, jit_word_t i0)
  	}
  	else
  	    ADDIW(r0, _ZERO_REGNO, lo);
@@ -213,7 +230,7 @@ index 8d6115a..f3eac86 100644
  #  endif
  }
  
-@@ -1401,7 +1426,7 @@ _movi_p(jit_state_t *_jit, jit_int32_t r0, jit_word_t i0)
+@@ -1401,7 +1428,7 @@ _movi_p(jit_state_t *_jit, jit_int32_t r0, jit_word_t i0)
      LD(r0, r0, 0);
  #  else
      LUI(r0, 0);
@@ -222,7 +239,269 @@ index 8d6115a..f3eac86 100644
  #  endif
      return (w);
  }
-@@ -2281,6 +2306,7 @@ _prolog(jit_state_t *_jit, jit_node_t *node)
+@@ -1468,7 +1495,7 @@ _lti(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+     else {
+ 	jit_int32_t	t0;
+ 	t0 = jit_get_reg(jit_class_gpr);
+-	movi(r0, i0);
++	movi(rn(t0), i0);
+ 	ltr(r0, r1, rn(t0));
+ 	jit_unget_reg(t0);
+     }
+@@ -1482,7 +1509,7 @@ _lti_u(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+     else {
+ 	jit_int32_t	t0;
+ 	t0 = jit_get_reg(jit_class_gpr);
+-	movi(r0, i0);
++	movi(rn(t0), i0);
+ 	ltr_u(r0, r1, rn(t0));
+ 	jit_unget_reg(t0);
+     }
+@@ -1593,7 +1620,7 @@ _gti(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+ {
+     jit_int32_t	t0;
+     t0 = jit_get_reg(jit_class_gpr);
+-    movi(r0, i0);
++    movi(rn(t0), i0);
+     ltr(r0, rn(t0), r1);
+     jit_unget_reg(t0);
+ }
+@@ -1603,7 +1630,7 @@ _gti_u(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+ {
+     jit_int32_t	t0;
+     t0 = jit_get_reg(jit_class_gpr);
+-    movi(r0, i0);
++    movi(rn(t0), i0);
+     ltr_u(r0, rn(t0), r1);
+     jit_unget_reg(t0);
+ }
+@@ -1626,12 +1653,33 @@ _nei(jit_state_t *_jit, jit_int32_t r0, jit_int32_t r1, jit_word_t i0)
+ 	SLTU(r0, _ZERO_REGNO, r1);
+ }
+ 
++/*
++ * A conditional branch reaches only simm12 bytes, too little for a forward
++ * target patched after emission. Use one B-type instruction for a known
++ * target in range; otherwise branch over a JAL on the inverted condition
++ * (funct3 ^ 1) and return the JAL, which patch_at retargets up to +-1 MiB.
++ */
+ static jit_word_t
+-_bltr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
++_bcc(jit_state_t *_jit, jit_int32_t fct,
++     jit_int32_t rs1, jit_int32_t rs2, jit_word_t br)
+ {
+     jit_word_t		w;
+     w = _jit->pc.w;
+-    BLT(r0, r1, br - w);
++    if (br != w && simm12_p(br - w)) {
++	Btype(99, fct, rs1, rs2, br - w);
++	return (w);
++    }
++    Btype(99, fct ^ 1, rs1, rs2, 8);
++    w = _jit->pc.w;
++    JAL(_ZERO_REGNO, br - w);
++    return (w);
++}
++
++static jit_word_t
++_bltr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
++{
++    jit_word_t		w;
++    w = bcc(4, r0, r1, br);
+     return (w);
+ }
+ 
+@@ -1651,8 +1699,7 @@ static jit_word_t
+ _bltr_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BLTU(r0, r1, br - w);
++    w = bcc(6, r0, r1, br);
+     return (w);
+ }
+ 
+@@ -1672,8 +1719,7 @@ static jit_word_t
+ _bler(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BGE(r1, r0, br - w);
++    w = bcc(5, r1, r0, br);
+     return (w);
+ }
+ 
+@@ -1693,8 +1739,7 @@ static jit_word_t
+ _bler_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BGEU(r1, r0, br - w);
++    w = bcc(7, r1, r0, br);
+     return (w);
+ }
+ 
+@@ -1714,8 +1759,7 @@ static jit_word_t
+ _beqr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BEQ(r1, r0, br - w);
++    w = bcc(0, r1, r0, br);
+     return (w);
+ }
+ 
+@@ -1735,8 +1779,7 @@ static jit_word_t
+ _bger(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BGE(r0, r1, br - w);
++    w = bcc(5, r0, r1, br);
+     return (w);
+ }
+ 
+@@ -1756,8 +1799,7 @@ static jit_word_t
+ _bger_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BGEU(r0, r1, br - w);
++    w = bcc(7, r0, r1, br);
+     return (w);
+ }
+ 
+@@ -1777,8 +1819,7 @@ static jit_word_t
+ _bgtr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BLT(r1, r0, br - w);
++    w = bcc(4, r1, r0, br);
+     return (w);
+ }
+ 
+@@ -1798,8 +1839,7 @@ static jit_word_t
+ _bgtr_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BLTU(r1, r0, br - w);
++    w = bcc(6, r1, r0, br);
+     return (w);
+ }
+ 
+@@ -1819,8 +1859,7 @@ static jit_word_t
+ _bner(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+ {
+     jit_word_t		w;
+-    w = _jit->pc.w;
+-    BNE(r1, r0, br - w);
++    w = bcc(1, r1, r0, br);
+     return (w);
+ }
+ 
+@@ -1861,8 +1900,7 @@ _boaddr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     SLT(rn(t1), rn(t1), r0);
+     /**/
+     patch_at(jal, _jit->pc.w);
+-    w = _jit->pc.w;
+-    BNE(rn(t1), _ZERO_REGNO, br - w);
++    w = bcc(1, rn(t1), _ZERO_REGNO, br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -1890,8 +1928,7 @@ _boaddr_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     addr(rn(t0), r0, r1);
+     SLTU(rn(t1), rn(t0), r0);
+     movr(r0, rn(t0));
+-    w = _jit->pc.w;
+-    BNE(_ZERO_REGNO, rn(t1), br - w);
++    w = bcc(1, _ZERO_REGNO, rn(t1), br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -1934,8 +1971,7 @@ _bxaddr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     SLT(rn(t1), rn(t1), r0);
+     /**/
+     patch_at(jal, _jit->pc.w);
+-    w = _jit->pc.w;
+-    BEQ(rn(t1), _ZERO_REGNO, br - w);
++    w = bcc(0, rn(t1), _ZERO_REGNO, br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -1963,8 +1999,7 @@ _bxaddr_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     addr(rn(t0), r0, r1);
+     SLTU(rn(t1), rn(t0), r0);
+     movr(r0, rn(t0));
+-    w = _jit->pc.w;
+-    BEQ(_ZERO_REGNO, rn(t1), br - w);
++    w = bcc(0, _ZERO_REGNO, rn(t1), br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -2007,8 +2042,7 @@ _bosubr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     SLT(rn(t1), rn(t1), r0);
+     /**/
+     patch_at(jal, _jit->pc.w);
+-    w = _jit->pc.w;
+-    BNE(rn(t1), _ZERO_REGNO, br - w);
++    w = bcc(1, rn(t1), _ZERO_REGNO, br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -2036,8 +2070,7 @@ _bosubr_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     subr(rn(t0), r0, r1);
+     SLTU(rn(t1), r0, rn(t0));
+     movr(r0, rn(t0));
+-    w = _jit->pc.w;
+-    BNE(_ZERO_REGNO, rn(t1), br - w);
++    w = bcc(1, _ZERO_REGNO, rn(t1), br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -2080,8 +2113,7 @@ _bxsubr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     SLT(rn(t1), rn(t1), r0);
+     /**/
+     patch_at(jal, _jit->pc.w);
+-    w = _jit->pc.w;
+-    BEQ(rn(t1), _ZERO_REGNO, br - w);
++    w = bcc(0, rn(t1), _ZERO_REGNO, br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -2109,8 +2141,7 @@ _bxsubr_u(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     subr(rn(t0), r0, r1);
+     SLTU(rn(t1), r0, rn(t0));
+     movr(r0, rn(t0));
+-    w = _jit->pc.w;
+-    BEQ(_ZERO_REGNO, rn(t1), br - w);
++    w = bcc(0, _ZERO_REGNO, rn(t1), br);
+     jit_unget_reg(t1);
+     jit_unget_reg(t0);
+     return (w);
+@@ -2135,8 +2166,7 @@ _bmsr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     jit_int32_t		t0;
+     t0 = jit_get_reg(jit_class_gpr|jit_class_nospill);
+     AND(rn(t0), r0, r1);
+-    w = _jit->pc.w;
+-    BNE(_ZERO_REGNO, rn(t0), br - w);
++    w = bcc(1, _ZERO_REGNO, rn(t0), br);
+     jit_unget_reg(t0);
+     return (w);
+ }
+@@ -2160,8 +2190,7 @@ _bmcr(jit_state_t *_jit, jit_word_t br, jit_int32_t r0, jit_int32_t r1)
+     jit_int32_t		t0;
+     t0 = jit_get_reg(jit_class_gpr|jit_class_nospill);
+     AND(rn(t0), r0, r1);
+-    w = _jit->pc.w;
+-    BEQ(_ZERO_REGNO, rn(t0), br - w);
++    w = bcc(0, _ZERO_REGNO, rn(t0), br);
+     jit_unget_reg(t0);
+     return (w);
+ }
+@@ -2281,6 +2310,7 @@ _prolog(jit_state_t *_jit, jit_node_t *node)
  	    offs += sizeof(jit_word_t);
  	}
      }
@@ -230,7 +509,7 @@ index 8d6115a..f3eac86 100644
      for (reg = 0; reg < jit_size(fregs); reg++) {
  	if (jit_regset_tstbit(&_jitc->function->regset, fregs[reg])) {
  	    stxi_d(offs, _SP_REGNO, rn(fregs[reg]));
-@@ -2300,7 +2326,7 @@ _prolog(jit_state_t *_jit, jit_node_t *node)
+@@ -2300,7 +2330,7 @@ _prolog(jit_state_t *_jit, jit_node_t *node)
      }
      if (_jitc->function->self.call & jit_call_varargs) {
  	for (reg = _jitc->function->vagp; jit_arg_reg_p(reg); ++reg)
@@ -239,7 +518,7 @@ index 8d6115a..f3eac86 100644
  		 _FP_REGNO, rn(JIT_RA0 - reg));
      }
  }
-@@ -2324,6 +2350,7 @@ _epilog(jit_state_t *_jit, jit_node_t *node)
+@@ -2324,6 +2354,7 @@ _epilog(jit_state_t *_jit, jit_node_t *node)
  	    offs += sizeof(jit_word_t);
  	}
      }
@@ -247,7 +526,7 @@ index 8d6115a..f3eac86 100644
      for (reg = 0; reg < jit_size(fregs); reg++) {
  	if (jit_regset_tstbit(&_jitc->function->regset, fregs[reg])) {
  	    ldxi_d(rn(fregs[reg]), _SP_REGNO, offs);
-@@ -2342,7 +2369,8 @@ _vastart(jit_state_t *_jit, jit_int32_t r0)
+@@ -2342,7 +2373,8 @@ _vastart(jit_state_t *_jit, jit_int32_t r0)
      assert(_jitc->function->self.call & jit_call_varargs);
      /* Initialize va_list to the first stack argument. */
      if (jit_arg_reg_p(_jitc->function->vagp))
@@ -257,7 +536,7 @@ index 8d6115a..f3eac86 100644
      else
  	addi(r0, _FP_REGNO, jit_selfsize());
  }
-@@ -2391,12 +2419,12 @@ _patch_at(jit_state_t *_jit, jit_word_t instr, jit_word_t label)
+@@ -2391,12 +2423,12 @@ _patch_at(jit_state_t *_jit, jit_word_t instr, jit_word_t label)
      }
  #  else
      if (i.U.opcode == 55) {					/* LUI */
@@ -421,9 +700,222 @@ index bfe64fc..df3139b 100644
      ldr_d(r0, r1);
      /* Update va_list. */
 diff --git a/lib/jit_riscv-sz.c b/lib/jit_riscv-sz.c
-index 5aa243e..94dbb22 100644
+index 5aa243e..d80d4a8 100644
 --- a/lib/jit_riscv-sz.c
 +++ b/lib/jit_riscv-sz.c
+@@ -184,46 +184,46 @@
+     16, /* stxi_i */
+     8,	/* stxr_l */
+     16, /* stxi_l */
+-    4,	/* bltr */
+-    8,	/* blti */
+-    4,	/* bltr_u */
+-    8,	/* blti_u */
+-    4,	/* bler */
+-    8,	/* blei */
+-    4,	/* bler_u */
+-    8,	/* blei_u */
+-    4,	/* beqr */
+-    16, /* beqi */
+-    4,	/* bger */
+-    8,	/* bgei */
+-    4,	/* bger_u */
+-    8,	/* bgei_u */
+-    4,	/* bgtr */
+-    8,	/* bgti */
+-    4,	/* bgtr_u */
+-    8,	/* bgti_u */
+-    4,	/* bner */
+-    16, /* bnei */
+-    8,	/* bmsr */
+-    12, /* bmsi */
+-    8,	/* bmcr */
+-    12, /* bmci */
+-    32, /* boaddr */
+-    36, /* boaddi */
+-    16, /* boaddr_u */
+-    20, /* boaddi_u */
+-    32, /* bxaddr */
+-    36, /* bxaddi */
+-    16, /* bxaddr_u */
+-    20, /* bxaddi_u */
+-    32, /* bosubr */
+-    36, /* bosubi */
+-    16, /* bosubr_u */
+-    20, /* bosubi_u */
+-    32, /* bxsubr */
+-    36, /* bxsubi */
+-    16, /* bxsubr_u */
+-    20, /* bxsubi_u */
++    8,	/* bltr */
++    16,	/* blti */
++    8,	/* bltr_u */
++    16,	/* blti_u */
++    8,	/* bler */
++    16,	/* blei */
++    8,	/* bler_u */
++    16,	/* blei_u */
++    8,	/* beqr */
++    24, /* beqi */
++    8,	/* bger */
++    16,	/* bgei */
++    8,	/* bger_u */
++    16,	/* bgei_u */
++    8,	/* bgtr */
++    16,	/* bgti */
++    8,	/* bgtr_u */
++    16,	/* bgti_u */
++    8,	/* bner */
++    24, /* bnei */
++    12,	/* bmsr */
++    20, /* bmsi */
++    12,	/* bmcr */
++    20, /* bmci */
++    36, /* boaddr */
++    44, /* boaddi */
++    20, /* boaddr_u */
++    28, /* boaddi_u */
++    36, /* bxaddr */
++    44, /* bxaddi */
++    20, /* bxaddr_u */
++    28, /* bxaddi_u */
++    36, /* bosubr */
++    44, /* bosubi */
++    20, /* bosubr_u */
++    28, /* bosubi_u */
++    36, /* bxsubr */
++    44, /* bxsubi */
++    20, /* bxsubr_u */
++    28, /* bxsubi_u */
+     4,	/* jmpr */
+     16, /* jmpi */
+     4,	/* callr */
+@@ -329,34 +329,34 @@
+     16, /* sti_f */
+     8,	/* stxr_f */
+     16, /* stxi_f */
+-    8,	/* bltr_f */
+-    16, /* blti_f */
+-    8,	/* bler_f */
+-    16, /* blei_f */
+-    8,	/* beqr_f */
+-    16, /* beqi_f */
+-    8,	/* bger_f */
+-    16, /* bgei_f */
+-    8,	/* bgtr_f */
+-    16, /* bgti_f */
+-    8,	/* bner_f */
+-    16, /* bnei_f */
+-    32, /* bunltr_f */
+-    40, /* bunlti_f */
+-    32, /* bunler_f */
+-    40, /* bunlei_f */
+-    32, /* buneqr_f */
+-    40, /* buneqi_f */
+-    32, /* bunger_f */
+-    40, /* bungei_f */
+-    32, /* bungtr_f */
+-    40, /* bungti_f */
+-    44, /* bltgtr_f */
+-    52, /* bltgti_f */
+-    32, /* bordr_f */
+-    40, /* bordi_f */
+-    24, /* bunordr_f */
+-    32, /* bunordi_f */
++    12,	/* bltr_f */
++    24, /* blti_f */
++    12,	/* bler_f */
++    24, /* blei_f */
++    12,	/* beqr_f */
++    24, /* beqi_f */
++    12,	/* bger_f */
++    24, /* bgei_f */
++    12,	/* bgtr_f */
++    24, /* bgti_f */
++    12,	/* bner_f */
++    24, /* bnei_f */
++    36, /* bunltr_f */
++    48, /* bunlti_f */
++    36, /* bunler_f */
++    48, /* bunlei_f */
++    36, /* buneqr_f */
++    48, /* buneqi_f */
++    36, /* bunger_f */
++    48, /* bungei_f */
++    36, /* bungtr_f */
++    48, /* bungti_f */
++    48, /* bltgtr_f */
++    60, /* bltgti_f */
++    36, /* bordr_f */
++    48, /* bordi_f */
++    28, /* bunordr_f */
++    40, /* bunordi_f */
+     0,	/* pushargr_f */
+     0,	/* pushargi_f */
+     0,	/* retr_f */
+@@ -423,34 +423,34 @@
+     16, /* sti_d */
+     8,	/* stxr_d */
+     16, /* stxi_d */
+-    8,	/* bltr_d */
+-    24, /* blti_d */
+-    8,	/* bler_d */
+-    24, /* blei_d */
+-    8,	/* beqr_d */
+-    24, /* beqi_d */
+-    8,	/* bger_d */
+-    24, /* bgei_d */
+-    8,	/* bgtr_d */
+-    24, /* bgti_d */
+-    8,	/* bner_d */
+-    24, /* bnei_d */
+-    32, /* bunltr_d */
+-    48, /* bunlti_d */
+-    32, /* bunler_d */
+-    48, /* bunlei_d */
+-    32, /* buneqr_d */
+-    48, /* buneqi_d */
+-    32, /* bunger_d */
+-    48, /* bungei_d */
+-    32, /* bungtr_d */
+-    48, /* bungti_d */
+-    44, /* bltgtr_d */
+-    60, /* bltgti_d */
+-    32, /* bordr_d */
+-    48, /* bordi_d */
+-    24, /* bunordr_d */
+-    40, /* bunordi_d */
++    12,	/* bltr_d */
++    32, /* blti_d */
++    12,	/* bler_d */
++    32, /* blei_d */
++    12,	/* beqr_d */
++    32, /* beqi_d */
++    12,	/* bger_d */
++    32, /* bgei_d */
++    12,	/* bgtr_d */
++    32, /* bgti_d */
++    12,	/* bner_d */
++    32, /* bnei_d */
++    36, /* bunltr_d */
++    56, /* bunlti_d */
++    36, /* bunler_d */
++    56, /* bunlei_d */
++    36, /* buneqr_d */
++    56, /* buneqi_d */
++    36, /* bunger_d */
++    56, /* bungei_d */
++    36, /* bungtr_d */
++    56, /* bungti_d */
++    48, /* bltgtr_d */
++    68, /* bltgti_d */
++    36, /* bordr_d */
++    56, /* bordi_d */
++    28, /* bunordr_d */
++    48, /* bunordi_d */
+     0,	/* pushargr_d */
+     0,	/* pushargi_d */
+     0,	/* retr_d */
 @@ -589,3 +589,597 @@
      8,	/* stxar_d */
      8,	/* stxai_d */
@@ -617,46 +1109,46 @@ index 5aa243e..94dbb22 100644
 +    16,	/* stxi_i */
 +    8,	/* stxr_l */
 +    16,	/* stxi_l */
-+    4,	/* bltr */
-+    8,	/* blti */
-+    4,	/* bltr_u */
-+    8,	/* blti_u */
-+    4,	/* bler */
-+    8,	/* blei */
-+    4,	/* bler_u */
-+    8,	/* blei_u */
-+    4,	/* beqr */
-+    16,	/* beqi */
-+    4,	/* bger */
-+    8,	/* bgei */
-+    4,	/* bger_u */
-+    8,	/* bgei_u */
-+    4,	/* bgtr */
-+    8,	/* bgti */
-+    4,	/* bgtr_u */
-+    8,	/* bgti_u */
-+    4,	/* bner */
-+    16,	/* bnei */
-+    8,	/* bmsr */
-+    12,	/* bmsi */
-+    8,	/* bmcr */
-+    12,	/* bmci */
-+    32,	/* boaddr */
-+    36,	/* boaddi */
-+    16,	/* boaddr_u */
-+    20,	/* boaddi_u */
-+    32,	/* bxaddr */
-+    36,	/* bxaddi */
-+    16,	/* bxaddr_u */
-+    20,	/* bxaddi_u */
-+    32,	/* bosubr */
-+    36,	/* bosubi */
-+    16,	/* bosubr_u */
-+    20,	/* bosubi_u */
-+    32,	/* bxsubr */
-+    36,	/* bxsubi */
-+    16,	/* bxsubr_u */
-+    20,	/* bxsubi_u */
++    8,	/* bltr */
++    16,	/* blti */
++    8,	/* bltr_u */
++    16,	/* blti_u */
++    8,	/* bler */
++    16,	/* blei */
++    8,	/* bler_u */
++    16,	/* blei_u */
++    8,	/* beqr */
++    24,	/* beqi */
++    8,	/* bger */
++    16,	/* bgei */
++    8,	/* bger_u */
++    16,	/* bgei_u */
++    8,	/* bgtr */
++    16,	/* bgti */
++    8,	/* bgtr_u */
++    16,	/* bgti_u */
++    8,	/* bner */
++    24,	/* bnei */
++    12,	/* bmsr */
++    20,	/* bmsi */
++    12,	/* bmcr */
++    20,	/* bmci */
++    36,	/* boaddr */
++    44,	/* boaddi */
++    20,	/* boaddr_u */
++    28,	/* boaddi_u */
++    36,	/* bxaddr */
++    44,	/* bxaddi */
++    20,	/* bxaddr_u */
++    28,	/* bxaddi_u */
++    36,	/* bosubr */
++    44,	/* bosubi */
++    20,	/* bosubr_u */
++    28,	/* bosubi_u */
++    36,	/* bxsubr */
++    44,	/* bxsubi */
++    20,	/* bxsubr_u */
++    28,	/* bxsubi_u */
 +    4,	/* jmpr */
 +    16,	/* jmpi */
 +    4,	/* callr */
@@ -762,34 +1254,34 @@ index 5aa243e..94dbb22 100644
 +    16,	/* sti_f */
 +    8,	/* stxr_f */
 +    16,	/* stxi_f */
-+    8,	/* bltr_f */
-+    16,	/* blti_f */
-+    8,	/* bler_f */
-+    16,	/* blei_f */
-+    8,	/* beqr_f */
-+    16,	/* beqi_f */
-+    8,	/* bger_f */
-+    16,	/* bgei_f */
-+    8,	/* bgtr_f */
-+    16,	/* bgti_f */
-+    8,	/* bner_f */
-+    16,	/* bnei_f */
-+    32,	/* bunltr_f */
-+    40,	/* bunlti_f */
-+    32,	/* bunler_f */
-+    40,	/* bunlei_f */
-+    32,	/* buneqr_f */
-+    40,	/* buneqi_f */
-+    32,	/* bunger_f */
-+    40,	/* bungei_f */
-+    32,	/* bungtr_f */
-+    40,	/* bungti_f */
-+    44,	/* bltgtr_f */
-+    52,	/* bltgti_f */
-+    32,	/* bordr_f */
-+    40,	/* bordi_f */
-+    24,	/* bunordr_f */
-+    32,	/* bunordi_f */
++    12,	/* bltr_f */
++    24,	/* blti_f */
++    12,	/* bler_f */
++    24,	/* blei_f */
++    12,	/* beqr_f */
++    24,	/* beqi_f */
++    12,	/* bger_f */
++    24,	/* bgei_f */
++    12,	/* bgtr_f */
++    24,	/* bgti_f */
++    12,	/* bner_f */
++    24,	/* bnei_f */
++    36,	/* bunltr_f */
++    48,	/* bunlti_f */
++    36,	/* bunler_f */
++    48,	/* bunlei_f */
++    36,	/* buneqr_f */
++    48,	/* buneqi_f */
++    36,	/* bunger_f */
++    48,	/* bungei_f */
++    36,	/* bungtr_f */
++    48,	/* bungti_f */
++    48,	/* bltgtr_f */
++    60,	/* bltgti_f */
++    36,	/* bordr_f */
++    48,	/* bordi_f */
++    28,	/* bunordr_f */
++    40,	/* bunordi_f */
 +    0,	/* pushargr_f */
 +    0,	/* pushargi_f */
 +    0,	/* retr_f */
@@ -856,34 +1348,34 @@ index 5aa243e..94dbb22 100644
 +    16,	/* sti_d */
 +    8,	/* stxr_d */
 +    16,	/* stxi_d */
-+    8,	/* bltr_d */
-+    28,	/* blti_d */
-+    8,	/* bler_d */
-+    28,	/* blei_d */
-+    8,	/* beqr_d */
-+    28,	/* beqi_d */
-+    8,	/* bger_d */
-+    28,	/* bgei_d */
-+    8,	/* bgtr_d */
-+    28,	/* bgti_d */
-+    8,	/* bner_d */
-+    28,	/* bnei_d */
-+    32,	/* bunltr_d */
-+    52,	/* bunlti_d */
-+    32,	/* bunler_d */
-+    52,	/* bunlei_d */
-+    32,	/* buneqr_d */
-+    52,	/* buneqi_d */
-+    32,	/* bunger_d */
-+    52,	/* bungei_d */
-+    32,	/* bungtr_d */
-+    52,	/* bungti_d */
-+    44,	/* bltgtr_d */
-+    64,	/* bltgti_d */
-+    32,	/* bordr_d */
-+    52,	/* bordi_d */
-+    24,	/* bunordr_d */
-+    44,	/* bunordi_d */
++    12,	/* bltr_d */
++    36,	/* blti_d */
++    12,	/* bler_d */
++    36,	/* blei_d */
++    12,	/* beqr_d */
++    36,	/* beqi_d */
++    12,	/* bger_d */
++    36,	/* bgei_d */
++    12,	/* bgtr_d */
++    36,	/* bgti_d */
++    12,	/* bner_d */
++    36,	/* bnei_d */
++    36,	/* bunltr_d */
++    60,	/* bunlti_d */
++    36,	/* bunler_d */
++    60,	/* bunlei_d */
++    36,	/* buneqr_d */
++    60,	/* buneqi_d */
++    36,	/* bunger_d */
++    60,	/* bungei_d */
++    36,	/* bungtr_d */
++    60,	/* bungti_d */
++    48,	/* bltgtr_d */
++    72,	/* bltgti_d */
++    36,	/* bordr_d */
++    60,	/* bordi_d */
++    28,	/* bunordr_d */
++    52,	/* bunordi_d */
 +    0,	/* pushargr_d */
 +    0,	/* pushargi_d */
 +    0,	/* retr_d */

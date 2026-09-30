@@ -1299,3 +1299,35 @@ No VGA work remains; the pattern's bar order and ramp steps were not separately 
 - User Test: PASS
 
 ---
+
+## 38 COMMIT Unreleased 2026-09-29T18:36:05-07:00
+
+#### Coming From:
+
+Unreleased 35b9840
+
+#### Purpose:
+
+Find and fix why Lightrec could not boot Spyro on the AE350, as the user chose to continue Lightrec after entry 36, and compare it with the JIT on Spyro.
+
+#### Outcome:
+
+Two GNU Lightning RISC-V backend defects caused the failure, and with both fixed Lightrec boots Spyro to its main menu on the AE350 and runs its intro about 2.6 times as fast as the JIT, so the user chose Lightrec as the CPU core going forward. `tests/psx_disc_cores_rv32.c` now also builds natively, and native x86-64 Lightrec with the same glue and machine model booted Spyro, as did Lightrec's own interpreter (`lightrec_run_interpreter`) on RV32, whose progress matched native exactly, which placed the fault in RV32 code generation. The harness's new `RUN_TRACE`, `FINE_FROM` and `DUMP_AT` options compared compiled and interpreted RV32 runs block by block, and the first divergence was the SCPH-1001 shell's `sltiu at, a0, 0x1000` at `0x80055fb0`, which took the wrong branch so that the BIOS's EXE header read reported failure. GNU Lightning's `_lti`, `_lti_u`, `_gti` and `_gti_u` load an immediate that does not fit 12 bits into the destination and compare against an unset temporary, and with that fixed a Lightrec block 17 emulated seconds into Spyro failed the `_Btype` assertion because conditional branches reach only 2 KiB; both defects are also present in the canonical GNU Lightning master `7965700`, which is still RV64-only (TOOL-012). `third_party/patches/gnu-lightning-rv32.patch` now loads the immediate into the temporary and adds `_bcc`, which emits a single B-type branch only for a known target in range and otherwise the inverted branch over a `JAL`; register conditional branches are 8 bytes in both size tables and every other branch allows 4 more bytes, and 4 more again for an immediate. The Lightning suite passes 145, 145 and 142 of 145 with the three expected failures, and `tests/test_lightrec_rv32.py` passes. The fix changed the SCPH-1001 logo checkpoint under Lightrec to 30,182,705 instructions in 1,213 blocks and 348,660 bytes of code; Lightrec's interpreter on RV32 gives the same 30,182,705 instructions, runs, interrupts and I/O counts with the standard framebuffer SHA-256, so the 30,182,928 recorded in entries 34 to 36 came from the compare defect, and `tests/test_psx_bios_lightrec.py` now expects the corrected count. Under `qemu-riscv32` Spyro with compiled Lightrec matched native x86-64 at every emulated second for 60 seconds. On the entry 37 core, `psx_disc_lightrec.tpx` (payload 810,400 bytes, CRC-32 `004b0b95`) booted Spyro through the former stall to its main menu; from 1,002 sectors on it advanced about 14.6 VBlanks per second against the JIT's 5.7 in entry 36, reaching VBlank 2,386 after 152 s against the JIT's 2,430 after 356 s. One Tang-Control `FPGA debug request timed out` interrupted the sampling script without affecting the run. The rebuilt `psx_bios_lightrec.tpx` (CRC-32 `28aace56`) is on the SD card but was not run on hardware. The user accepted the result. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including TOOL-012, validated this entry as number 38 with exactly six required sections, confirmed that 38 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user; Lightrec is now the CPU core, but gameplay is not yet possible because Gate 1 ties Tang-Control's controller inputs to zero, so the next milestone for play is routing the BL616 controller state to the emulated digital pad. Other open work is making the Lightrec programs the default builds, rerunning the SCPH-1001 logo timing with the fixed library, profiling Lightrec's slow start from entry 36, committing a runner for `tests/psx_disc_cores_rv32.c` (built like `tests/test_psx_bios_lightrec.py` with `DISC_PATH` and `SECONDS`, or natively with the host compiler), and offering both GNU Lightning fixes upstream.
+
+#### Files Modified:
+
+- tests/psx_disc_cores_rv32.c
+- tests/test_psx_bios_lightrec.py
+- third_party/patches/gnu-lightning-rv32.patch
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

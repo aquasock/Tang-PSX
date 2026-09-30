@@ -129,6 +129,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How does ilp32d pass doubles in integer registers and on the stack? | TOOL | TOOL-009 |
 | What does Lightrec expect of its host for interrupts, the GTE, cache isolation, and cycles? | TOOL | TOOL-010 |
 | Why can git apply succeed without changing any file? | TOOL | TOOL-011 |
+| Which GNU Lightning RISC-V backend defects break Lightrec, and is there a newer upstream RV32 port? | TOOL | TOOL-012 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
@@ -179,6 +180,7 @@ TOOL-008: "Upstream GNU Lightning's RISC-V backend is RV64-only; Tang-PSX's RV32
 TOOL-009: "ilp32d doubles: fa0-fa7, then a GPR pair, a7+stack split, or an 8-aligned stack slot; variadic doubles use even GPR pairs and never split"
 TOOL-010: "Lightrec exits only on block ends; JR/RFE re-runs a GTE command at EPC; cache isolation only from uncached code; JR-to-J keeps the caller's segment"
 TOOL-011: "Run inside a Git work tree, git apply silently ignores patched paths outside the current directory and still succeeds; stop repository discovery to apply to an exported tree"
+TOOL-012: "GNU Lightning RISC-V: lti/lti_u/gti/gti_u with a non-simm12 immediate compare against an unset temporary; conditional branches reach only simm12 bytes; master 7965700 is still RV64-only"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
@@ -606,6 +608,19 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
   sources:
     - "git-apply(1) manual page, Git 2.53.0 (git help -m apply), DESCRIPTION"
   verification: "Building liblightrec.a under build/lightrec produced an unpatched GNU Lightning (jit_riscv-sz.c without the RV32 table, JIT_INSTR_MAX undefined) while the same build under /tmp was patched; with the ceiling set, the build under build/ is patched and the Lightning check suite passes (core-log entry 36)."
+
+- record_id: TOOL-012
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "GNU Lightning RISC-V compare-immediate and branch-range defects"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "In lib/jit_riscv-cpu.c of both notaz/gnu_lightning a6bb2b5 and the canonical GNU Lightning master 7965700 (git.savannah.gnu.org, 2026-08-25), _lti and _lti_u with an immediate outside simm12, and _gti and _gti_u always, execute movi(r0, i0) and then compare r1 with the temporary t0, which is never loaded, so the result is undefined. Conditional branches are one B-type instruction whose offset _Btype and _patch_at require to satisfy simm12_p (+-2 KiB, half the encoding's range), and a forward branch is emitted before its target is known, so a target patched more than 2 KiB away fails the assertion. Master 7965700 still ends lib/jit_riscv.c with #error \"only 64 bit ports tested\" for __WORDSIZE != 64."
+  consequence: "third_party/patches/gnu-lightning-rv32.patch loads the immediate into the temporary, and its _bcc emits a single B-type branch only for a known target in range, otherwise the inverted branch over a JAL that _patch_at retargets up to +-1 MiB; both size tables allow for the longer branches. No newer upstream RV32 backend exists to replace the Tang-PSX port. Both defects also affect RV64 hosts."
+  sources:
+    - "GNU Lightning master 7965700 (https://git.savannah.gnu.org/git/lightning.git, 2026-08-25), lib/jit_riscv-cpu.c _lti, _lti_u, _gti, _gti_u, _Btype, _patch_at; lib/jit_riscv.c"
+    - "notaz/gnu_lightning a6bb2b5a7cf36e074e12ccaed32990b437deb784, same functions"
+  verification: "The SCPH-1001 shell's sltiu at, a0, 0x1000 at 0x80055fb0 took the wrong branch under compiled RV32 Lightrec, so the BIOS's EXE header read failed and Spyro stopped at the PlayStation logo; with the compare fixed, a Lightrec block aborted in _Btype 17 emulated seconds into Spyro. With both fixes Spyro under qemu-riscv32 matches native x86-64 Lightrec for 60 emulated seconds and boots to its main menu on the AE350 (core-log entry 38)."
 
 - record_id: TOOL-001
   kind: TOOLCHAIN

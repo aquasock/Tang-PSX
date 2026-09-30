@@ -34,7 +34,7 @@ import lightrec_build  # noqa: E402
 BIOS_SHA256 = "71af94d1e47a68c11e8fdb9f8368040601514a42a5a399cda48c7d3bff1e99d3"
 FRAME_SHA256 = "0b884450d8c8f3becc8ed4c9e7bdbd04ae0132640e1cdf48513dcd561eb47ae7"
 EXPECTED = (
-    "calls=114713 instructions=30182928 vblank=144 gpu_words=10768 "
+    "calls=114713 instructions=30182705 vblank=144 gpu_words=10768 "
     "primitives=414 uploads=63 dma_words=158497 complete=1"
 )
 START_CYCLES = (0x00000000, 0x7ff00000, 0xfff00000)
