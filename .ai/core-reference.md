@@ -100,6 +100,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | How much block RAM / logic does the device have? | DEV | DEV-002 |
 | How wide is the DDR3 bus and what parts are fitted? | BRD | BRD-001 |
 | Which FPGA pins carry DDR3, the clock, and the BL616 UART? | BRD | BRD-002, BRD-003 |
+| Which FPGA pins reach the dock's PMOD sockets, and how are their pins numbered? | BRD | BRD-004 |
+| Which PmodVGA pins carry colour and sync? | BRD | BRD-005 |
 | What DDR3 controller configuration is proven on this board? | DDR3 | DDR3-001 |
 | How do I drive the Gowin DDR3 native (user) port correctly? | DDR3 | DDR3-002 |
 | How is the native-port address laid out? | DDR3 | DDR3-003 |
@@ -144,6 +146,8 @@ DEV-002: "GW5AST-138: 138,240 LUTs, 340 BSRAM blocks of 18 Kbit"
 BRD-001: "Two Hynix H5TQ4G63EFR-RDC x16 DDR3 devices form a 32-bit bus: DQ[31:0], DQS[3:0], DM[3:0], 1 GiB"
 BRD-002: "x32 DDR3 pin map for PG484, SSTL15 at 1.5 V, from Sipeed's constraints"
 BRD-003: "50 MHz oscillator on V22; BL616 UART to FPGA on V14 (FPGA RX) and U15 (FPGA TX), LVCMOS33"
+BRD-004: "PMOD1 (beside HDMI) IO0-7 = W19 W20 F19 F20 E22 D22 E21 D21; PMOD0 IO0-7 = V18 V19 G21 G22 F18 E18 C22 B22; IO 2k is pin k+1, IO 2k+1 is pin k+7; LVCMOS33"
+BRD-005: "Digilent PmodVGA: J1 pins 1-4 R0-R3, 7-10 B0-B3; J2 pins 1-4 G0-G3, 7 HS, 8 VS; bit 3 is the MSB; 3.3 V buffers"
 DDR3-001: "Proven controller: 400 MHz memory clock, 1:4, CL6/CWL5, RTT_NOM 40, 256-bit native port on a 100 MHz user clock"
 DDR3-002: "Native port: cmd 000 write / 001 read; command and its write data in the same cycle; wr_data_mask 1 = byte skipped; read data cannot be back-pressured"
 DDR3-003: "addr[28:0] is in 32-bit words, one BL8 burst = 8 words; addr[28] (rank) is unused; addr[27:0] spans 1 GiB"
@@ -247,6 +251,32 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
     - "litex-boards commit e4307929c38a, litex_boards/platforms/sipeed_tang_console.py (clk50, serial)"
     - "Sipeed TangMega-138K-example commit 06e7d8b, ddr3_1v4_hs.cst (clk, uart_tx, uart_rx)"
   verification: "Tang-Control transport and 50 MHz-derived clocks work in every deployed image."
+
+- record_id: BRD-004
+  kind: BOARD
+  topic_id: BRD
+  title: "Dock PMOD socket pins and numbering"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "The Tang Console dock's PMOD1 socket, the one beside the HDMI port, carries PMOD1_IO0-IO7 on FPGA pins W19 W20 F19 F20 E22 D22 E21 D21, and PMOD0 carries PMOD0_IO0-IO7 on V18 V19 G21 G22 F18 E18 C22 B22, as LVCMOS33. Sipeed's IO numbering interleaves the rows: IO0, IO2, IO4 and IO6 are PMOD pins 1-4 and IO1, IO3, IO5 and IO7 are pins 7-10. LiteX's pmod0/pmod1 connectors list the same FPGA pins in IO order, so a LiteX connector index is Sipeed's IO number, not the linear pin 1-4 then 7-10 order of the Digilent convention."
+  consequence: "gateware/ae350_gate1.py maps the PmodVGA with J1 on PMOD1 and J2 on PMOD0 in interleaved order by default; gateware/vga_output.py keeps linear order and the other placements selectable at debug address 0x210."
+  sources:
+    - "TangCore commit f69c6ff, monitor/src/boards/console.cst (PMOD1_IO0-7 DualShock pins, PMOD0_IO0-7 LEDs) and nestang/src/boards/console60k_snescontroller.cst (one SNES controller on each of IO0/2/4 and IO1/3/5)"
+    - "litex-boards commit e4307929c38a, litex_boards/platforms/sipeed_tang_console.py (_dock_connectors pmod0, pmod1)"
+  verification: "A Digilent PmodVGA produced no sync in any placement with linear numbering and a correct picture with interleaved numbering and J1 on PMOD1 on 2026-09-29; the CRT then showed the framebuffer from power-on (core-log entry 37). The interleaving was inferred from TangCore's controller split before the hardware test; Sipeed's dock schematic was not available."
+
+- record_id: BRD-005
+  kind: EXTERNAL
+  topic_id: BRD
+  title: "Digilent PmodVGA pinout"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "The PmodVGA (rev C.0, Digilent 500-345) is a dual PMOD with 12-bit colour. J1 pins 1-4 are R0-R3 and pins 7-10 are B0-B3; J2 pins 1-4 are G0-G3, pin 7 is HS, pin 8 is VS and pins 9-10 are not connected; pins 5/11 are GND and 6/12 are VCC3V3 on both headers. Two SN74ALVC245 buffers powered from the PMOD 3.3 V pins, with 100 kOhm pulldowns on their inputs, drive per-colour resistor ladders in which bit 3 is the most significant step, and 100 Ohm series resistors on the syncs."
+  consequence: "Every module pin is a buffered input, so a wrong placement only loses the picture. Turning the module over swaps pins 1-4 with 7-10 but keeps power and ground on their pins; reversing it end for end does not."
+  sources:
+    - "Digilent Pmod VGA Reference Manual, https://digilent.com/reference/pmod/pmodvga/reference-manual (pin table)"
+    - "Digilent PmodVGA schematic rev C.0, doc 500-345, dated 2016-12-06"
+  verification: "On a Dell E773c CRT the test pattern displayed and the Gate 1 framebuffer looked identical to the HDMI output to the user (core-log entry 37); the bar order and ramp steps were not separately confirmed."
 
 - record_id: DDR3-001
   kind: MEMORY

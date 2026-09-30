@@ -22,7 +22,7 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | Address | Meaning |
 | --- | --- |
 | `0x00` | Magic `0x54505831` (`TPX1`) |
-| `0x04` | ABI version (`0x00020002`) |
+| `0x04` | ABI version (`0x00020003`) |
 | `0x08` | Firmware stage; bit 31 means complete |
 | `0x0c` | Failure code; zero means no detected failure |
 | `0x10` | Number of DDR words verified |
@@ -53,6 +53,17 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | `0x204` | Disc request byte offset in the `.bin` image |
 | `0x208` | Disc request byte length |
 | `0x20c` | Disc size in 2352-byte sectors; written by Tang-Control, 0 = no disc |
+| `0x210` | PmodVGA mode, written by Tang-Control: bit 0 swaps sockets, bit 1 swaps rows, bit 2 test pattern, bit 3 linear pin numbering |
+
+A Digilent PmodVGA across the dock's two PMOD sockets shows the same 640x480
+picture as HDMI, at 12-bit colour. `tools/ae350_run.py vga` sets its mode:
+`--swap-sockets` and `--swap-rows` select how the module is placed (its J1
+carries red and blue, J2 green and sync), `--linear` switches from Sipeed's
+interleaved PMOD pin numbering to LiteX's, and `--pattern` replaces the
+framebuffer with colour bars and 16-step ramps that do not depend on DDR3. With
+the wrong setting the monitor reports no signal, so trying the eight settings
+with `--pattern` separates a misplaced module from a fault;
+`gateware/sim/test_vga_output.py` checks every pin in all sixteen modes.
 
 Writing bit 0 to debug address `0x100` resets the AE350 for 31 system-clock
 cycles. The FPGA stream receiver and its counters remain active across this

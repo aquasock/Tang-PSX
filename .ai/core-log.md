@@ -1265,3 +1265,37 @@ Reevaluate with the user whether to continue Lightrec. Continuing means finding 
 - User Test: FAIL
 
 ---
+
+## 37 COMMIT Unreleased 2026-09-29T17:14:40-07:00
+
+#### Coming From:
+
+Unreleased 75a0d08
+
+#### Purpose:
+
+Add Digilent PmodVGA output across the dock's two PMOD sockets, showing the same picture as HDMI, with a runtime-selectable module placement and test pattern that separate a misplaced module from a fault.
+
+#### Outcome:
+
+Gate 1 now drives a Digilent PmodVGA (BRD-005) as well as HDMI, and the user's Dell E773c CRT shows the same picture from power-on. The new `gateware/vga_output.py` observes the stream the Gowin HDMI PHY receives in the 25 MHz pixel domain and drives the top four bits of each colour, black outside the active area, and active-low syncs through two registered stages onto the 16 PMOD pins at LVCMOS33. A four-bit mode at debug address `0x210`, set with `tools/ae350_run.py vga`, swaps the sockets, swaps the rows, selects linear instead of interleaved pin numbering, or replaces the picture with colour bars and 16-step ramps that do not depend on DDR3; the debug ABI is now `0x00020003`. `gateware/sim/test_vga_output.py` drives the module from LiteX's timing generator and checks every pin in all 16 modes over 12,800 pixel clocks against an independent model, and it failed as intended for ignored row swaps, missing blanking, wrong source bits, a ramp bit-order error, sync polarity, and inverted interleaving. The first core assumed LiteX's linear PMOD order; its placement option 2 met timing and was deployed, but no placement produced a picture. TangCore's constraints put one of two controllers on each of IO0/2/4/6 and IO1/3/5/7, indicating that Sipeed's IO numbering interleaves the rows (BRD-004), so interleaved numbering became the default with linear kept selectable. Only placement option 3 of that build met timing; on it the test pattern appeared with J1 on the socket LiteX calls `pmod1`, beside the HDMI port, and the framebuffer on the CRT matched HDMI. The final build therefore makes `pmod1` socket a, so mode 0 is correct at power-on. Again only placement option 3 met all setup and hold timing, with Fmax 89.593 MHz for the 75 MHz `sys_clk`, 120.722 MHz for the 100 MHz `ddr_clk`, 57.658 MHz for the 50 MHz board clock, and 136.495 MHz for the 25 MHz pixel clock; options 1, 2 and 4 failed `sys_clk` or `ddr_clk` setup, continuing the one-in-four closure seen since entry 29. Its 5,018,822-byte image, SHA-256 `c26a23205104f0f95ccf180a536c4f365a27a52bf678fc23befd212525654ba8` and CRC-32 `c0ad9d23`, was installed as `cores/console138k/tang-psx.bin` with verified SD readback; the TangCore menu shows at most 14 characters of a name, so the earlier `tang-psx-gate1-vga.bin` looked like `tang-psx-gate1.bin` and was removed at the user's request, and the entry 29 core remains as `tang-psx-gate1.bin`. On it the Gate 1 self-checks passed (stage `0x80000001`, features `0xff`), the CRT showed the image at power-on with no command, and the Lightrec and Spyro runs of entry 36 ran. The user accepted the result. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including BRD-004 and BRD-005, validated this entry as number 37 with exactly six required sections, confirmed that 37 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+No VGA work remains; the pattern's bar order and ramp steps were not separately confirmed and can be checked with `tools/ae350_run.py vga --pattern` if colour accuracy matters. The open project decision is the one recorded in entry 36, whether to continue Lightrec or return to the JIT.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/sim/test_vga_output.py
+- gateware/vga_output.py
+- tools/ae350_run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

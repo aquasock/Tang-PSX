@@ -6,12 +6,12 @@ import argparse
 import os
 from pathlib import Path
 
-from migen import Cat, Case, ClockDomain, ClockSignal, FSM, If, Instance, Mux, ResetSignal, Signal, log2_int
+from migen import Cat, Case, ClockDomain, ClockDomainsRenamer, ClockSignal, FSM, If, Instance, Mux, ResetSignal, Signal, log2_int
 from migen.genlib.cdc import MultiReg, PulseSynchronizer
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
 from litex.gen import LiteXModule, NextState, NextValue
-from litex.build.generic_platform import IOStandard
+from litex.build.generic_platform import IOStandard, Pins, Subsignal
 from litex.soc.cores.clock.gowin_gw5a import GW5APLL
 from litex.soc.integration.builder import Builder
 from litex.soc.integration.soc import SoCRegion
@@ -31,6 +31,7 @@ from ae350_ram_bridge import Gate1RAMBridge
 from ddr3_port_arbiter import DDR3PortArbiter, DDR3RWArbiter
 from gpu_accel import GPUAccelerator
 from stream_loader import StreamLoader
+from vga_output import VGAOutput
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -563,6 +564,20 @@ class Gate1SoC(tang_console.BaseSoC):
             base=FRAMEBUFFER_BASE,
             dma_port=video_port,
         )
+        # The same picture on a Digilent PmodVGA across the dock's two PMOD
+        # sockets. Tang-Control selects the module's placement and a built-in
+        # test pattern through debug address 0x210 (see gateware/vga_output.py).
+        # Socket a is PMOD1, beside the HDMI port, where the module's J1 sits
+        # when plugged in normally; the default mode 0 drives that placement.
+        self.platform.add_extension([("pmod_vga", 0,
+            Subsignal("a", Pins(" ".join(f"pmod1:{i}" for i in range(8)))),
+            Subsignal("b", Pins(" ".join(f"pmod0:{i}" for i in range(8)))),
+            IOStandard("LVCMOS33"),
+        )])
+        vga_pads = self.platform.request("pmod_vga")
+        self.vga = ClockDomainsRenamer("hdmi")(
+            VGAOutput(self.videophy.sink, vga_pads.a, vga_pads.b))
+
         # The framebuffer region already exports VIDEO_FRAMEBUFFER_BASE in
         # generated/mem.h. Avoid exporting the identical SoC constant too,
         # which warns when LiteX software includes mem.h before soc.h.
@@ -632,6 +647,12 @@ class Gate1SoC(tang_console.BaseSoC):
             disc_sectors.eq(debug_wdata))
         self.specials += MultiReg(disc_sectors, self.gate1._disc_sectors.status, "sys")
 
+        # VGA placement and test-pattern mode (gateware/vga_output.py).
+        vga_mode = Signal(4)
+        self.sync.diag += If(debug_valid & debug_write & (debug_address == 0x210),
+            vga_mode.eq(debug_wdata[:4]))
+        self.specials += MultiReg(vga_mode, self.vga.mode, "hdmi")
+
         reset_request = Signal()
         reset_count = Signal(5)
         self.reset_pulse = reset_pulse = PulseSynchronizer("diag", "sys")
@@ -648,7 +669,7 @@ class Gate1SoC(tang_console.BaseSoC):
 
         debug_registers = {
             0x00: debug_rdata_comb.eq(0x54505831),
-            0x04: debug_rdata_comb.eq(0x00020002),
+            0x04: debug_rdata_comb.eq(0x00020003),
             0x08: debug_rdata_comb.eq(self.gate1._stage.storage),
             0x0c: debug_rdata_comb.eq(self.gate1._failure.storage),
             0x10: debug_rdata_comb.eq(self.gate1._ddr_words.storage),
@@ -683,6 +704,7 @@ class Gate1SoC(tang_console.BaseSoC):
             0x204: debug_rdata_comb.eq(self.gate1._disc_offset.storage),
             0x208: debug_rdata_comb.eq(self.gate1._disc_length.storage),
             0x20c: debug_rdata_comb.eq(disc_sectors),
+            0x210: debug_rdata_comb.eq(vga_mode),
         }
         for index, register in enumerate(self.gate1._log):
             debug_registers[0x40 + 4*index] = debug_rdata_comb.eq(register.storage)

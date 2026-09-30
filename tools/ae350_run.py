@@ -13,6 +13,10 @@
       returns after the image starts and is intended for persistent programs.
   status
       Show loader state, stream counters, result registers, and the log.
+  vga [--swap-sockets] [--swap-rows] [--linear] [--pattern]
+      Set the PmodVGA placement and test pattern (debug address 0x210), then
+      show the setting. With no options, restore the default placement and the
+      framebuffer picture. See gateware/vga_output.py.
   blob -o <file> / blob-crc
       Write the blob program's deterministic data, or print its expected result.
 
@@ -41,6 +45,7 @@ DEFAULT_LOAD = 0x42000000
 REMOTE_DIR = "tpx"
 
 RESET_ADDRESS = 0x100
+VGA_ADDRESS = 0x210
 STATE_NAMES = {
     0x00: "boot", 0x01: "wait", 0x02: "receive", 0x03: "run", 0x04: "returned",
     0x81: "error: bad header", 0x82: "error: bad load range", 0x83: "error: truncated",
@@ -156,6 +161,18 @@ def command_upload(args, port):
     return 0
 
 
+def command_vga(args, port):
+    mode = (args.swap_sockets | args.swap_rows << 1 | args.pattern << 2
+            | args.linear << 3)
+    poke(port, VGA_ADDRESS, mode)
+    mode = peek(port, VGA_ADDRESS)[0]
+    print(f"vga        mode {mode}: J1 on socket {'b' if mode & 1 else 'a'}, "
+          f"rows {'swapped' if mode & 2 else 'normal'}, "
+          f"{'linear' if mode & 8 else 'interleaved'} pins, "
+          f"{'test pattern' if mode & 4 else 'framebuffer'}")
+    return 0
+
+
 def command_run(args, port):
     remote = args.remote if "/" in args.remote else f"{REMOTE_DIR}/{args.remote}"
     if args.reset:
@@ -201,6 +218,17 @@ def main():
                    help="return after starting a persistent program")
     p.add_argument("--timeout", type=float, default=30.0)
     sub.add_parser("status")
+    p = sub.add_parser("vga")
+    p.add_argument("--swap-sockets", action="store_true",
+                   help="J1 (red/blue) on PMOD0 and J2 on PMOD1 (default: "
+                   "J1 on PMOD1, beside the HDMI port)")
+    p.add_argument("--swap-rows", action="store_true",
+                   help="module upside down: pins 1-4 and 7-10 exchanged")
+    p.add_argument("--linear", action="store_true",
+                   help="LiteX pin numbering (IO0-3 on pins 1-4) instead of "
+                   "Sipeed's interleaved IO0/2/4/6 on pins 1-4")
+    p.add_argument("--pattern", action="store_true",
+                   help="colour bars and ramps instead of the framebuffer")
     p = sub.add_parser("blob")
     p.add_argument("-o", "--output", required=True)
     sub.add_parser("blob-crc")
@@ -220,6 +248,8 @@ def main():
             return command_upload(args, port)
         if args.command == "run":
             return command_run(args, port)
+        if args.command == "vga":
+            return command_vga(args, port)
         print_status(port)
         return 0
     finally:
