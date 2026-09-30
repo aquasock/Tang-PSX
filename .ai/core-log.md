@@ -1560,3 +1560,33 @@ Reevaluate with the user. The `sys_clk` margin is 0.9 percent, so the next GPU c
 - User Test: PASS
 
 ---
+
+## 46 COMMIT Unreleased 2026-09-29T23:46:39-07:00
+
+#### Coming From:
+
+Unreleased 97c061c
+
+#### Purpose:
+
+Restore the Gate 1 core's `sys_clk` setup slack before any further GPU work, as the user approved after entry 45 shipped a core with a 0.9 percent margin.
+
+#### Outcome:
+
+The cycle set out to restore `sys_clk` setup slack and ended by reverting every change it made, with the finding that per-path work cannot buy closure on this device. Three changes were implemented and each was verified against its own functional gate. In `gateware/l2_cache.py` the write data is presented to the data block RAM unconditionally with only the write enable gated by the tag compare, and the compare result and the line are registered in the lookup state with a new decide state that consumes them, which removed the path entry 45 measured as its worst, in which the tag block RAM, a carry-chain equality and a 256-bit write-data mux fed the data block RAM write port; the cost is one system cycle, so a hit now returns three cycles after the command instead of two and a miss spends two lookup cycles before the DDR3 read. In `gateware/gpu_rasterizer.sv` the rectangle end-of-column and end-of-row conditions became registered flags following the `x_last` and `y_last` idiom the file already uses for triangles, which removed the path from `rect_row` through the 10-bit row compare into the 32-bit `current_y` increment. `gateware/sim/test_l2_cache.py` passed with unchanged counters, 2393 reads of which 271 hit, 1202 missed and 920 bypassed, plus 1607 writes, and `tests/test_psx_gpu_accel.py` matched 40000 random polygons and rectangles in the same 19639952 cycles after the second and third changes, so none of them regressed behaviour, and each did remove the path it targeted, with the tag block RAM leaving the worst-path list entirely. Timing nevertheless did not close. Four build sweeps were run, route option 1 with the first change alone, with the first two, and with all three, and route option 2 with all three: thirteen placement builds in all, whose best result was route option 1 at placement 3 with a `sys_clk` Fmax of 74.321 MHz against the 75.000 MHz constraint and a setup TNS of -0.228 ns over two endpoints. Route option 2 was uniformly worse and reached only 69.498 MHz at placement 3 with -22.432 ns over 45 endpoints, so the user rejected it and placement option 0 as well; placement 2 stalled in routing on both attempts, as it had in entry 45's cycle, and was killed both times. The worst `sys_clk` path at route option 1 placement 3 ran from the arbiter grant, fanout 102, through two LUTs into the reset input of the accelerator's read-data register with 11.6 of its 13.7 ns in routing, so the shortfall is a congestion and placement artefact rather than logic depth: nets moved about 1 ns between builds of identical logic and the worst path moved to a different net each time. The user therefore directed a revert and deferred the structural congestion work. After `git checkout` of both files the tree returned to `97c061c` and `scripts/build-gate1.sh` at route option 1 reproduced entry 45's numbers exactly, placement 1 at 70.203 MHz, placement 3 meeting timing at 75.660 MHz and placement 4 at 56.018 MHz, and the placement 3 image hashes to `6dbe2e37a3220740ba9b8258eed3f5cd6f019ee08c009c37e4576be3c4c0c822`, byte-identical to the image already installed as `cores/console138k/tang-psx.bin`, so the shipped core rebuilds deterministically from the committed tree, the loss of closure was caused by the reverted changes rather than by build noise, and no deployment was needed. The three reverted changes are described in this entry and nowhere else. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 46 with exactly six required sections, confirmed that 46 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+No timing work is outstanding: the tree at `97c061c` holds the core that ships, it closes deterministically at placement 3 with a 0.9 percent `sys_clk` margin, and a rebuild byte-identically reproduces the deployed image, so no build or deployment is needed until the source changes. Route option 2, placement option 0, and the two-file RTL change of this cycle are recorded as failures not to be repeated, and structural congestion work stays deferred at the user's direction. The next actionable work is the GPU step 2a follow-on that entry 45 queued, decoupling the stepper so outside-triangle steps overlap other work, adding the texture and CLUT caches for the read waits, deepening or batching the descriptor feed for the 48 words per primitive, or moving the 9.3 ms display copy to hardware scanout; whichever the user picks should be validated with `tests/test_psx_gpu_accel.py` before a closing build, and measured on hardware, since the replay cannot model arbiter contention.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
