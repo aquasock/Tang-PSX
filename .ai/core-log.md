@@ -1456,3 +1456,33 @@ Reevaluate with the user. The recommended next step is to measure where the roug
 - User Test: N/A
 
 ---
+
+## 43 COMMIT Unreleased 2026-09-29T19:33:20-07:00
+
+#### Coming From:
+
+Unreleased 8a4c80d
+
+#### Purpose:
+
+Simulate the AE350's DDR3 read path stage by stage, as the user requested, to find where the roughly 57 system cycles of a cache miss measured in entry 42 are spent.
+
+#### Outcome:
+
+Our gateware accounts for 14 to 23 of the roughly 57 system cycles of a miss, and the rest lies in the Gowin DDR3 controller. The new `gateware/sim/test_ae350_memory_latency.py` builds the path from Gate 1's own modules (LiteX's bursting `AHB2Wishbone`, `WishboneRegisterSlice`, `BurstWishbone2Native`, `DDR3RWArbiter` and `DDR3PortArbiter` with idle GPU and video clients, and the 75-to-100 MHz `LiteDRAMNativePortCDC` with GowinDDR3's read-data Buffer), restates `gowin_ddr3_native.sv` in Migen, and models the encrypted controller as an always-ready port with a fixed read latency L in DDR clocks, with clock periods in the true 4:3 ratio. For a 64-bit WRAP4 line-fill burst, the assumed AE350 form, the first beat returns 14 + 0.75·L system cycles after the AHB address phase and the last 23 + 0.75·L; at L = 0 the command reaches the controller after 8.5 cycles through the bridge, register slice, burst converter, both arbiters and the command crossing, the data returns in 5.5 more through the adapter, the read crossing and the Buffer, and beats 2 to 4 take 3 cycles each through the register slice. Matched to the measured miss, the controller and any contention from HDMI scanout take about 34 to 43 system cycles, a read latency of about 45 to 57 DDR clocks or 450 to 570 ns, depending on whether the A25 restarts on the first beat or waits for the line; the controller's latency was not measured directly. Removing avoidable stages, pipelining the burst beats and avoiding the clock crossings could save about 10 to 13 cycles, while an FPGA-side cache in block RAM could serve hits in an estimated 6 to 8. The user test is not applicable to this simulation. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff, validated this entry as number 43 with exactly six required sections, confirmed that 43 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user whether to build a hardware counter of the Gowin controller's read latency in the native adapter on its own or with a prototype L2 cache on the AE350 RAM port; GPU step 2a from entry 39 remains queued.
+
+#### Files Modified:
+
+- gateware/sim/test_ae350_memory_latency.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
