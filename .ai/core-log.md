@@ -1396,3 +1396,33 @@ Propose to the user a hardware run with the A25 instruction and data prefetch en
 - User Test: N/A
 
 ---
+
+## 41 COMMIT Unreleased 2026-09-29T19:14:47-07:00
+
+#### Coming From:
+
+Unreleased d116d18
+
+#### Purpose:
+
+Test whether enabling the A25's hardware instruction and data prefetch speeds up CPU emulation, as the user approved, without changing Lightrec or emulation.
+
+#### Outcome:
+
+This board's A25 has no hardware cache prefetch, so the experiment could not run. A `psx_disc_lightrec.tpx` build (payload 815,064 bytes, CRC-32 `40f526dc`) set `mcache_ctl` bits 9 and 10 with `csrs` at startup and logged the register as read back; on the entry 37 core it logged `mcache_ctl 3`, so both prefetch enables read as zero and the run used the existing cache settings (AE350-008). The change was reverted and no program source changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including AE350-008, validated this entry as number 41 with exactly six required sections, confirmed that 41 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. CPU-side miss cost can only be reduced through a faster DDR3 path for the AE350 or better locality, and the glue's per-call overhead and the software GTE remain the other CPU-side options; GPU step 2a from entry 39 remains the next GPU work.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

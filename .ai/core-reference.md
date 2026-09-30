@@ -114,6 +114,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Why do uncached AE350 benchmarks not measure memory speed? | AE350 | AE350-005 |
 | How much of a system-clock cycle do the AE350 macro's RAM-port inputs need? | AE350 | AE350-006 |
 | Which PLL output clocks the AE350 core? | AE350 | AE350-007 |
+| Does this board's A25 have hardware cache prefetch? | AE350 | AE350-008 |
 | Which CPU semantics must the R3000A interpreter preserve? | PSXCPU | PSXCPU-001 |
 | Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
 | How are PlayStation GPU commands, status, transfers, drawing, and VRAM laid out? | PSXGPU | PSXGPU-001 |
@@ -161,6 +162,7 @@ AE350-005: "With caches off, AE350 code running from the ROM port is instruction
 AE350-006: "Gowin's timing model gives the AE350_SOC RAM-port (DDR_H*) inputs about 5 ns of setup at the macro; register every path into them"
 AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32 B lines, inferred), mmsc_cfg = 0x2007F039; fence.i makes D-cache stores visible to instruction fetch"
 AE350-007: "The A25 core runs at the frequency of PLL_R[0] CLKOUT1, whatever the netlist connects to CORE_CLK; put the CPU clock on CLKOUT1"
+AE350-008: "mcache_ctl bits 9 (IC_PREFETCH_EN) and 10 (DC_PREFETCH_EN) read back 0 after csrs on this board's A25: no hardware cache prefetch"
 PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
 GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
 GTE-002: "Lighting/color commands chain LLM, BK+LCM, RGBC multiply, and FC depth cue through 44-bit MACs and push MAC/16 to the color FIFO"
@@ -431,6 +433,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
     - "litex-boards commit e4307929c38a, litex_boards/targets/sipeed_tang_mega_138k_pro.py: INS_LOC PLL_R[0] for the Gowin AE350"
     - "Tang-Phosphor commit 292ae779da23, src/ae350/ae350_pll.v (CLKOUT0 = 750 MHz, CLKOUT1 = 75 MHz)"
   verification: "Inferred from three hardware builds on 2026-09-28 (core-log entry 26). software/programs/clock ran 2^31 and 2^30 counted cycles of a dependent addi chain at 0.94 to 0.99 instructions per cycle; tools/ae350_run.py wall-clock times of 28.69 s, 21.54 s, and 1.48 s give 74.85, 49.85, and at least 725 MHz. No primary document naming CLKOUT1 was found."
+
+- record_id: AE350-008
+  kind: PROCESSOR
+  topic_id: AE350
+  title: "This board's A25 has no hardware cache prefetch"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "Setting mcache_ctl (CSR 0x7CA) bits 9 (IC_PREFETCH_EN) and 10 (DC_PREFETCH_EN, AE350-002) with csrs from a program loaded by the Gate 1 ROM, whose caches are already enabled, leaves the register reading 0x3: both prefetch enables read as zero, so this A25 does not implement them."
+  consequence: "Cache misses to DDR3 through the RAM bridge cannot be hidden by the core's own prefetch; reducing CPU-side miss cost needs a faster RAM path or better locality."
+  sources:
+    - "AE350-002 (mcache_ctl bit assignments)"
+  verification: "software/programs/psx_disc built with the csrs and a read-back logged mcache_ctl 3 on hardware on 2026-09-29 (core-log entry 41)."
 
 - record_id: PSXCPU-001
   kind: PROCESSOR
