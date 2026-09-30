@@ -1228,3 +1228,40 @@ With the user's go-ahead, start step 4 of the approved Lightrec plan by running 
 - User Test: N/A
 
 ---
+
+## 36 COMMIT Unreleased 2026-09-29T17:08:12-07:00
+
+#### Coming From:
+
+Unreleased 75a0d08
+
+#### Purpose:
+
+Run Lightrec on the AE350 as step 4 of the approved Lightrec plan, first on the SCPH-1001 logo checkpoint against the JIT and then on Spyro the Dragon.
+
+#### Outcome:
+
+Lightrec runs correctly on the AE350 for the SCPH-1001 logo but is slower than the JIT there, and it fails to boot Spyro, so it is not yet a replacement. `scripts/build-programs.sh` builds `psx_bios_lightrec` and `psx_disc_lightrec` from the existing programs with `PSX_LIGHTREC`, linking `build/lightrec/liblightrec.a`, `software/lightrec` and newlib-nano, and the new `software/lightrec/tpx_platform.c` routes runtime output to the loader log and turns a runtime exit into failure `0x4c52xxxx` at stage `0x800fbad0`. Lightning's own flush compiles to nothing on this bare-metal target, so every emission reaches instruction fetch only through Lightrec's `code_inv` hook, which executes `fence rw,rw` and `fence.i` as the JIT does. Building the library under `build/` exposed that `git apply` had silently skipped the whole RV32 patch whenever the export lay inside the Tang-PSX work tree (TOOL-011); `tools/lightning_source.py` now stops repository discovery at the destination, and the Lightning suite still passes 145, 145 and 142 of 145 with the three expected failures, as do `tests/test_lightrec_rv32.py` and `tests/test_psx_bios_lightrec.py`. All hardware runs used the entry 37 VGA cores, whose CPU, DDR3 and GPU logic is unchanged from entry 29. `psx_bios_lightrec.tpx` (payload 809,628 bytes, CRC-32 `6521c4de`) returned `0xb1051001` with telemetry and Lightrec statistics exactly matching QEMU (30,182,928 instructions, 144 VBlanks, 1,208 blocks in 331,900 bytes, 2,929,660 heap bytes, 438 interrupts) in 12,693 ms, against 6,342 ms for the JIT `psx_bios.tpx` (payload 589,708 bytes, CRC-32 `e5bbc1b5`), which reproduced entry 30. Nearly all of the gap is before VBlank 13 (7,575 ms against 1,450 ms), where Lightrec compiles most blocks and the JIT uses its BIOS loop accelerators; from VBlank 13 to the logo Lightrec took 5,118 ms against 4,892 ms, with the fabric GPU taking about 4.2 s in both. The unverified working hypothesis for the slow start is cache misses in Lightrec's large compiler and heap through the 75 MHz RAM bridge. Running the JIT after Lightrec without reloading the core hung at startup because `psx_gpu_reset` waited for the fabric's completed-primitive count to match the new program's zero while it still held 414 from the previous program, a defect present since entry 29; it now waits for the fabric to go idle and resets it, and `tests/test_psx_gpu_accel.py` and `tests/test_psx_bios.py` pass. On Spyro, `psx_disc_lightrec.tpx` (payload 810,432 bytes, CRC-32 `1519b348`) stopped at the PlayStation logo after 13 sectors: the BIOS read the first sector of `SCUS_942.28` (LBA 53875) into its buffer, but the kernel `read()` in its header loader at `0xbfc03c90` reported fewer than 2,048 bytes, so it called `SystemErrorBootOrDiskFailure('B', 0x38A)` and looped. The new `tests/psx_disc_cores_rv32.c` reproduces this exactly under `qemu-riscv32` with Lightrec, while its JIT build continues to 1,002 sectors like the hardware, and its CD-ROM command trace shows both cores issuing identical commands up to that point. The JIT `psx_disc.tpx` (CRC-32 `2c153712`, byte-identical to the build before this cycle) ran Spyro on hardware to 1,002 sectors and VBlank 2,530 after 376 s, about 5 to 6 VBlanks per second through the intro, which the user watched. The user test failed because Lightrec cannot boot Spyro. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including TOOL-011, validated this entry as number 36 with exactly six required sections, confirmed that 36 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user whether to continue Lightrec. Continuing means finding why the kernel's CD `read()` reports a short read under Lightrec, using `tests/psx_disc_cores_rv32.c` (built like `tests/test_psx_bios_lightrec.py` with `DISC_PATH`, `SECONDS` and optionally `CD_TRACE` or `RAM_DUMP` defined) to compare the kernel's event and interrupt handling between the cores, then comparing Spyro's steady-state frame rate against the JIT on hardware, since the logo checkpoint mostly measures Lightrec's slow start. Otherwise effort returns to the JIT, whose Spyro intro runs at about a tenth of real time with CPU emulation dominant.
+
+#### Files Modified:
+
+- scripts/build-programs.sh
+- software/lightrec/tpx_platform.c
+- software/lightrec/tpx_platform.h
+- software/programs/psx_bios/main.c
+- software/programs/psx_disc/main.c
+- software/psx/gpu.c
+- tests/psx_disc_cores_rv32.c
+- tools/lightning_source.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

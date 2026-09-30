@@ -12,6 +12,7 @@ import argparse
 import subprocess
 import tarfile
 import io
+import os
 from pathlib import Path
 
 
@@ -27,8 +28,14 @@ def prepare(destination: Path) -> Path:
                              check=True, capture_output=True).stdout
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(destination, filter="data")
+    # Inside a work tree (such as build/ here) git apply takes paths relative
+    # to that tree's root and silently skips the ones outside the current
+    # directory, which is every path in the patch, so stop repository
+    # discovery at the destination.
+    environment = dict(os.environ,
+                       GIT_CEILING_DIRECTORIES=str(destination.resolve().parent))
     subprocess.run(["git", "apply", "--directory=", str(PATCH)],
-                   cwd=destination, check=True)
+                   cwd=destination, env=environment, check=True)
     return destination
 
 

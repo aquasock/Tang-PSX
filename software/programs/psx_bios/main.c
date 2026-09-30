@@ -4,6 +4,12 @@
 
 #include "machine.h"
 #include "tpx_api.h"
+#ifdef PSX_LIGHTREC
+#include "memmanager.h"
+#include "psx_lightrec.h"
+#include "runtime.h"
+#include "tpx_platform.h"
+#endif
 
 #define SERVICE_INSTRUCTIONS 256u
 #define REFRESH_VBLANKS 60u
@@ -11,6 +17,7 @@
 #define PROFILE_VBLANK 13u
 #define RESULT_COMPLETE 0xb1051001u
 #define PSX_VRAM_BASE 0x7fe00000u
+#define CODE_BUFFER_BYTES (8u << 20)
 
 extern const uint8_t psx_bios_image[];
 extern const uint8_t psx_bios_image_end[];
@@ -24,6 +31,9 @@ static uint64_t elapsed_cycles;
 static uint64_t display_cycles;
 static uint64_t profile_vblank_cycles;
 static uint32_t counter_hz;
+#ifdef PSX_LIGHTREC
+static uint8_t code_buffer[CODE_BUFFER_BYTES] __attribute__((aligned(4096)));
+#endif
 
 /*
  * Full 64-bit cycle count. A single emulated operation can outlast the 5.7 s
@@ -75,8 +85,8 @@ static uint32_t milliseconds(uint64_t cycles)
 
 /*
  * The log ring holds 128 bytes, so the summary is compact: elapsed time and
- * its attribution in milliseconds, then the JIT counts that tie this run to
- * the deterministic qemu-riscv32 profile.
+ * its attribution in milliseconds, then the CPU core's counts that tie this
+ * run to the deterministic qemu-riscv32 profile.
  */
 static void log_profile(const struct tpx_api *api)
 {
@@ -86,9 +96,16 @@ static void log_profile(const struct tpx_api *api)
 	log_decimal(api, " gpu ", milliseconds(machine.profile_gpu_cycles));
 	log_decimal(api, " acc ", milliseconds(machine.profile_accel_cycles));
 	log_decimal(api, " dsp ", milliseconds(display_cycles));
+#ifdef PSX_LIGHTREC
+	log_decimal(api, "\nlr c", psx_lightrec_stats()->code_emissions);
+	log_decimal(api, " k", lightrec_get_mem_usage(MEM_FOR_CODE));
+	log_decimal(api, " h", (uint32_t)tpx_runtime_heap_used());
+	log_decimal(api, " i", psx_lightrec_stats()->interrupts);
+#else
 	log_decimal(api, "\njit ", machine.jit.executed_instructions);
 	log_decimal(api, " fb ", machine.jit.interpreter_instructions);
 	log_decimal(api, " fl ", machine.jit.cache_flushes);
+#endif
 	log_text(api, "\n");
 }
 
@@ -117,6 +134,20 @@ static void copy_display(const struct tpx_api *api,
 	display_cycles += read_cycle() - start;
 }
 
+/* Returns Lightrec's unexpected exit flags, which end the run; 0 otherwise. */
+static uint32_t run_cpu(void)
+{
+#ifdef PSX_LIGHTREC
+	uint64_t start = read_cycle();
+	uint32_t flags = psx_lightrec_run(&machine, SERVICE_INSTRUCTIONS);
+	machine.profile_cpu_cycles += read_cycle() - start;
+	return flags;
+#else
+	psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
+	return 0;
+#endif
+}
+
 static int logo_complete(void)
 {
 	return machine.gpu.command_words >= 10768u &&
@@ -131,7 +162,11 @@ uint32_t main(const struct tpx_api *api)
 	uint64_t timeout = (uint64_t)RUN_TIMEOUT_SECONDS * api->cpu_hz;
 	uint64_t next_publish = api->cpu_hz;
 	uint32_t next_refresh = REFRESH_VBLANKS;
+	uint32_t flags = 0;
 
+#ifdef PSX_LIGHTREC
+	tpx_platform_attach(api);
+#endif
 	counter_hz = api->cpu_hz;
 	api->set_reg(TPX_REG_STAGE, 0x00010001u);
 	api->set_reg(TPX_REG_FAILURE, 0);
@@ -142,6 +177,14 @@ uint32_t main(const struct tpx_api *api)
 		return 0xdead1001u;
 	}
 	psx_machine_reset(&machine, psx_ram, psx_vram, psx_bios_image);
+#ifdef PSX_LIGHTREC
+	if (psx_lightrec_init(&machine, code_buffer, sizeof(code_buffer))) {
+		api->set_reg(TPX_REG_FAILURE, 3u);
+		api->set_reg(TPX_REG_STAGE, 0x8001bad3u);
+		log_text(api, "lightrec init failed\n");
+		return 0xdead1003u;
+	}
+#endif
 	elapsed_cycles = 0;
 	start_cycle = read_cycle();
 	while (!logo_complete() && elapsed() < timeout) {
@@ -149,8 +192,8 @@ uint32_t main(const struct tpx_api *api)
 			psx_machine_vblank(&machine);
 			if (machine.vblanks == PROFILE_VBLANK)
 				profile_vblank_cycles = elapsed();
-		} else {
-			psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
+		} else if ((flags = run_cpu()) != 0) {
+			break;
 		}
 		if ((int32_t)(machine.vblanks - next_refresh) >= 0) {
 			copy_display(api, framebuffer);
@@ -170,6 +213,14 @@ uint32_t main(const struct tpx_api *api)
 	elapsed();
 	copy_display(api, framebuffer);
 	publish(api);
+	if (flags) {
+		api->set_reg(TPX_REG_FAILURE, 4u);
+		api->set_reg(TPX_REG_STAGE, 0x8001bad4u);
+		log_decimal(api, "lightrec exit ", flags);
+		log_text(api, "\n");
+		log_profile(api);
+		return 0xdead1004u;
+	}
 	if (!logo_complete()) {
 		api->set_reg(TPX_REG_FAILURE, 2u);
 		api->set_reg(TPX_REG_STAGE, 0x8001bad2u);

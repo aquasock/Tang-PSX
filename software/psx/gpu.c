@@ -768,7 +768,11 @@ void psx_gpu_reset(struct psx_gpu *gpu, uint16_t *vram)
 	int hardware_accel = accel_available();
 #if PSX_GPU_ACCEL
 	if (hardware_accel) {
-		accel_wait();
+		/* The fabric's counters belong to whichever program last used it,
+		 * so wait for its queue to drain rather than for this program's
+		 * primitive count, then reset it. */
+		while (!(accel[1] & 2u))
+			;
 		accel_buffer_index = 0;
 		accel_buffer_words = 0;
 		accel_reset();

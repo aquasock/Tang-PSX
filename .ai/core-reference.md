@@ -126,6 +126,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Can GNU Lightning / Lightrec generate RV32 code? | TOOL | TOOL-008 |
 | How does ilp32d pass doubles in integer registers and on the stack? | TOOL | TOOL-009 |
 | What does Lightrec expect of its host for interrupts, the GTE, cache isolation, and cycles? | TOOL | TOOL-010 |
+| Why can git apply succeed without changing any file? | TOOL | TOOL-011 |
 | Why does a Gowin SDC clock fail to attach to a net? | TOOL | TOOL-003 |
 | Why did CSR timing change after removing LiteDRAM? | TOOL | TOOL-004 |
 | How must a LiteX CSRStatus with fields be driven? | TOOL | TOOL-005 |
@@ -173,6 +174,7 @@ TOOL-007: "SUG100 section 8.3: set_option -place_option 0-4, -route_option 0-2 s
 TOOL-008: "Upstream GNU Lightning's RISC-V backend is RV64-only; Tang-PSX's RV32 port is third_party/patches/gnu-lightning-rv32.patch; ww/d pairs are in memory order"
 TOOL-009: "ilp32d doubles: fa0-fa7, then a GPR pair, a7+stack split, or an 8-aligned stack slot; variadic doubles use even GPR pairs and never split"
 TOOL-010: "Lightrec exits only on block ends; JR/RFE re-runs a GTE command at EPC; cache isolation only from uncached code; JR-to-J keeps the caller's segment"
+TOOL-011: "Run inside a Git work tree, git apply silently ignores patched paths outside the current directory and still succeeds; stop repository discovery to apply to an exported tree"
 TCTL-001: "Uploads (put) are refused unless the TangCore main menu is active; cores load from cores/console138k/"
 TCTL-002: "peek/poke use FPGA_EXT_READ32/WRITE32 over iosys_bl616 at 2,000,000 baud; core ID is reported by its low byte"
 TCTL-003: "tangctl status reports core_running: no while a core is active; active_core (81 for Gate 1) is the reliable indicator"
@@ -562,6 +564,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
   sources:
     - "Lightrec commit a7464ccc65c5360897ff6814d9707968f34a1d2b (third_party/lightrec): lightrec.c lightrec_set_exit_flags, lightrec_execute, lightrec_mtc0; interpreter.c int_delay_slot; emitter.c rec_mtc0, block_uses_icache, rec_special_SYSCALL; optimizer.c lightrec_transform_ops (Convert JR to J), lightrec_detect_impossible_branches; blockcache.c lightrec_block_is_old"
   verification: "tests/psx_lightrec_unit_rv32.c under qemu-riscv32 and built natively for x86-64 showed the GTE command running twice when the host also executed it on interrupt entry, an isolated store reaching RAM from kseg0 code, and a constant JR to kseg1 continuing at the kseg0 address (core-log entry 33)."
+
+- record_id: TOOL-011
+  kind: TOOLCHAIN
+  topic_id: TOOL
+  title: "git apply inside a work tree ignores paths outside the current directory"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "git-apply(1), Git 2.53.0, DESCRIPTION: when running from a subdirectory in a repository, patched paths outside the directory are ignored. The paths in a patch are taken relative to the top of the work tree that contains the current directory, so applying a patch to a tree exported below another repository's work tree (for example under an ignored build/ directory) skips every file and still exits with status 0."
+  consequence: "tools/lightning_source.py applies gnu-lightning-rv32.patch with GIT_CEILING_DIRECTORIES set to the destination's parent, so Git does not discover the Tang-PSX work tree and the patch applies to the exported GNU Lightning tree wherever it is placed."
+  sources:
+    - "git-apply(1) manual page, Git 2.53.0 (git help -m apply), DESCRIPTION"
+  verification: "Building liblightrec.a under build/lightrec produced an unpatched GNU Lightning (jit_riscv-sz.c without the RV32 table, JIT_INSTR_MAX undefined) while the same build under /tmp was patched; with the ceiling set, the build under build/ is patched and the Lightning check suite passes (core-log entry 36)."
 
 - record_id: TOOL-001
   kind: TOOLCHAIN

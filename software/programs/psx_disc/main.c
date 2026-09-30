@@ -10,6 +10,10 @@
 
 #include "machine.h"
 #include "tpx_api.h"
+#ifdef PSX_LIGHTREC
+#include "psx_lightrec.h"
+#include "tpx_platform.h"
+#endif
 
 #ifndef RUN_TIMEOUT_SECONDS
 #define RUN_TIMEOUT_SECONDS  0u       /* zero runs until the core is reset */
@@ -22,6 +26,7 @@
 #define REQUEST_TIMEOUT_MS   2000u
 #define RESULT_DONE          0xd15c0001u
 #define PSX_VRAM_BASE        0x7fe00000u
+#define CODE_BUFFER_BYTES    (8u << 20)
 
 enum window_state { WINDOW_EMPTY, WINDOW_FILLING, WINDOW_READY };
 
@@ -51,6 +56,9 @@ static uint32_t retries;
 static uint32_t misses;
 static uint64_t profile_sync_cycles;
 static uint64_t profile_display_cycles;
+#ifdef PSX_LIGHTREC
+static uint8_t code_buffer[CODE_BUFFER_BYTES] __attribute__((aligned(4096)));
+#endif
 
 static uint64_t read_cycle(void)
 {
@@ -179,6 +187,20 @@ static void log_decimal(const char *label, uint32_t value)
 		api->putc(digits[--n]);
 }
 
+/* Returns Lightrec's unexpected exit flags, which end the run; 0 otherwise. */
+static uint32_t run_cpu(void)
+{
+#ifdef PSX_LIGHTREC
+	uint64_t start = read_cycle();
+	uint32_t flags = psx_lightrec_run(&machine, SERVICE_INSTRUCTIONS);
+	machine.profile_cpu_cycles += read_cycle() - start;
+	return flags;
+#else
+	psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
+	return 0;
+#endif
+}
+
 static void publish(void)
 {
 	api->set_reg(TPX_REG_WORDS, machine.cpu.cycles);
@@ -206,8 +228,12 @@ uint32_t main(const struct tpx_api *loader)
 	uint32_t next_vblank = FRAME_CYCLES;
 	uint32_t next_publish = 1000u;
 	uint32_t frames = 0;
+	uint32_t flags = 0;
 
 	api = loader;
+#ifdef PSX_LIGHTREC
+	tpx_platform_attach(api);
+#endif
 	api->set_reg(TPX_REG_STAGE, 0x00020001u);
 	api->set_reg(TPX_REG_FAILURE, 0);
 	log_text("PSX disc boot\n");
@@ -232,6 +258,14 @@ uint32_t main(const struct tpx_api *loader)
 		disc.region = 'A';
 		psx_machine_insert_disc(&machine, &disc);
 	}
+#ifdef PSX_LIGHTREC
+	if (psx_lightrec_init(&machine, code_buffer, sizeof(code_buffer))) {
+		api->set_reg(TPX_REG_FAILURE, 3u);
+		api->set_reg(TPX_REG_STAGE, 0x8002bad3u);
+		log_text("lightrec init failed\n");
+		return 0xdead2003u;
+	}
+#endif
 	start_cycle = read_cycle();
 #if RUN_TIMEOUT_SECONDS
 	while (elapsed_ms() < RUN_TIMEOUT_SECONDS * 1000u) {
@@ -254,8 +288,8 @@ uint32_t main(const struct tpx_api *loader)
 				api->flush_dcache();
 				profile_display_cycles += read_cycle() - profile_start;
 			}
-		} else {
-			psx_machine_run(&machine, SERVICE_INSTRUCTIONS);
+		} else if ((flags = run_cpu()) != 0) {
+			break;
 		}
 		if (elapsed_ms() >= next_publish) {
 			publish();
@@ -265,6 +299,13 @@ uint32_t main(const struct tpx_api *loader)
 		}
 	}
 	publish();
+	if (flags) {
+		api->set_reg(TPX_REG_FAILURE, 4u);
+		api->set_reg(TPX_REG_STAGE, 0x8002bad4u);
+		log_decimal("lightrec exit ", flags);
+		log_text("\n");
+		return 0xdead2004u;
+	}
 	api->set_reg(TPX_REG_STAGE, 0x80020001u);
 	log_decimal("vblanks ", machine.vblanks);
 	log_decimal(" sectors ", machine.cdrom.sectors_read);
