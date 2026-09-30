@@ -17,7 +17,10 @@ line-fill form. For each controller latency the script prints when each stage
 first saw the request or the data, in 75 MHz system cycles from the NONSEQ
 address phase, and the cycles to the first and the last data beat.
 
-    python3 gateware/sim/test_ae350_memory_latency.py [LATENCY ...]
+With --l2 the path includes gateware/l2_cache.py, as Gate 1 now does, and
+the line is filled twice: the second fill hits in the L2.
+
+    python3 gateware/sim/test_ae350_memory_latency.py [--l2] [LATENCY ...]
 """
 
 import sys
@@ -37,6 +40,7 @@ from litedram.frontend.adapter import LiteDRAMNativePortCDC
 
 from ae350_ram_bridge import BurstWishbone2Native, WishboneRegisterSlice
 from ddr3_port_arbiter import DDR3PortArbiter, DDR3RWArbiter
+from l2_cache import L2Cache
 
 # Migen cannot lower write-only ports in the crossing FIFOs.
 _get_port = Memory.get_port
@@ -88,11 +92,12 @@ class NativeAdapter(Module):
 
 
 class Path(Module):
-    def __init__(self, latency):
+    def __init__(self, latency, l2=False):
         self.ahb = ahb.AHBInterface(data_width=64, address_width=32)
         bridge_bus = wishbone.Interface(data_width=64, address_width=32, addressing="word")
         frontend_bus = wishbone.Interface(data_width=64, address_width=32, addressing="word")
         cpu_port = LiteDRAMNativePort("both", ADDRESS_WIDTH, 256)
+        bridge_port = LiteDRAMNativePort("both", ADDRESS_WIDTH, 256) if l2 else cpu_port
         gpu_port = LiteDRAMNativePort("both", ADDRESS_WIDTH, 256)
         video_port = LiteDRAMNativePort("read", ADDRESS_WIDTH, 256)
         cpu_gpu_port = LiteDRAMNativePort("both", ADDRESS_WIDTH, 256)
@@ -102,7 +107,10 @@ class Path(Module):
 
         self.submodules.bridge = ahb.AHB2Wishbone(self.ahb, bridge_bus, with_bursting=True)
         self.submodules.slice = WishboneRegisterSlice(bridge_bus, frontend_bus)
-        self.submodules.frontend = BurstWishbone2Native(frontend_bus, cpu_port, ORIGIN)
+        self.submodules.frontend = BurstWishbone2Native(frontend_bus, bridge_port, ORIGIN)
+        if l2:
+            self.submodules.l2 = L2Cache(bridge_port, cpu_port, 4096,
+                0x1ff0000, 0x2000000)
         self.submodules.rw_arbiter = DDR3RWArbiter(cpu_port, gpu_port, cpu_gpu_port)
         self.submodules.arbiter = DDR3PortArbiter(cpu_gpu_port, video_port, shared_port)
         self.submodules.cdc = LiteDRAMNativePortCDC(cdc_port, ddr_port)
@@ -138,8 +146,15 @@ class Path(Module):
         ]
 
 
-def master(dut, result):
-    """AHB master: one WRAP4 64-bit read burst of the line, pipelined per AHB."""
+def master(dut, result, fills=1):
+    """AHB master: WRAP4 64-bit read bursts of the line, pipelined per AHB."""
+    for fill in range(fills):
+        yield from line_fill(dut, result, fill)
+        for _ in range(4):
+            yield
+
+
+def line_fill(dut, result, fill):
     bus = dut.ahb
     addresses = [LINE + 8 * lane for lane in range(4)]
     phase = 0
@@ -167,8 +182,8 @@ def master(dut, result):
                 phase += 1
         if cycle > 2000:
             raise RuntimeError("line fill did not complete")
-    result["first"] = beats[0]
-    result["last"] = beats[-1]
+    result.setdefault("first", []).append(beats[0])
+    result.setdefault("last", []).append(beats[-1])
 
 
 @passive
@@ -182,8 +197,8 @@ def probe(probes, period, result, domain):
         cycle += 1
 
 
-def measure(latency):
-    dut = Path(latency)
+def measure(latency, l2=False):
+    dut = Path(latency, l2)
     result = {}
     stages = {}
 
@@ -194,7 +209,7 @@ def measure(latency):
         # Let the crossing FIFOs leave reset before the burst.
         for _ in range(8):
             yield
-        yield from master(dut, result)
+        yield from master(dut, result, 2 if l2 else 1)
 
     run_simulation(dut, {"sys": [reset_wait(), sys_probe], "ddr": [ddr_probe]},
         clocks={"sys": SYS_PERIOD, "ddr": DDR_PERIOD},
@@ -207,14 +222,16 @@ def measure(latency):
 
 
 def main():
-    latencies = [int(v) for v in sys.argv[1:]] or [0, 10, 20]
+    l2 = "--l2" in sys.argv[1:]
+    latencies = [int(v) for v in sys.argv[1:] if v != "--l2"] or [0, 10, 20]
     for latency in latencies:
-        result, timeline = measure(latency)
+        result, timeline = measure(latency, l2)
         print(f"controller read latency {latency} DDR clocks:")
         for when, name in timeline:
             print(f"  {when:6.2f}  {name}")
-        print(f"  first beat {result['first']} and last beat "
-              f"{result['last']} system cycles after the NONSEQ address phase")
+        for fill, (first, last) in enumerate(zip(result["first"], result["last"])):
+            print(f"  fill {fill + 1}: first beat {first} and last beat {last} "
+                  f"system cycles after its NONSEQ address phase")
     return 0
 
 

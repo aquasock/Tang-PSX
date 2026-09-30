@@ -1486,3 +1486,43 @@ Reevaluate with the user whether to build a hardware counter of the Gowin contro
 - User Test: N/A
 
 ---
+
+## 44 COMMIT Unreleased 2026-09-29T21:45:42-07:00
+
+#### Coming From:
+
+Unreleased 825ce58
+
+#### Purpose:
+
+Add a fabric L2 cache on the AE350 RAM port with a hardware counter of the Gowin controller's read latency, as the user chose after entry 43, and measure both on hardware.
+
+#### Outcome:
+
+A 128 KiB fabric L2 cuts an AE350 miss that hits in it from about 570 to 240 core cycles and made Spyro's CPU-bound disc loading up to about three times as fast. The new `gateware/l2_cache.py` sits between `Gate1RAMBridge` and the DDR3 arbiters: 4,096 direct-mapped 32-byte lines in block RAM, write-through with updates to present lines, with `0x7fe00000`-`0x7fffffff` (VRAM and the HDMI framebuffer, which the fabric GPU writes) always bypassed, and an enable at debug address `0x218` under which writes still update present lines so it stays coherent. `gateware/sim/test_l2_cache.py` checks it against a reference memory with byte-masked writes, conflicting lines, enable toggles and an external writer in the bypass range; mutations removing write updates, whole-line writes, a narrowed tag compare and caching of the bypass range all failed it, while routing bypass reads through the lookup alone does not, because bypass lines are never filled. `gowin_ddr3_native.sv` now times each read from issue to returned data, `gateware/sim/gowin_ddr3_native_tb.sv` checks the counters, and debug addresses `0x220`-`0x238` publish L2 hits, misses, bypass reads and writes and the latency count, sum and maximum; the debug ABI is `0x00020004`, and `tools/ae350_run.py l2` switches and reports them. `gateware/sim/test_ae350_memory_latency.py --l2` predicts a hit line fill of 16 system cycles. Of four placements only option 3 met timing, with Fmax 77.919 MHz for the 75 MHz `sys_clk`, 109.368 MHz for the 100 MHz `ddr_clk`, 74.700 MHz for the 50 MHz board clock and 146.735 MHz for the pixel clock, while options 1, 2 and 4 failed `sys_clk` setup (TNS -33.556, -5.029 and -192.418 ns); block RAM rose from 121 to 189 of 340. The 5,079,548-byte image (SHA-256 `2eeabcbb74878c38c51d20741fe45ae155e287553895ed584806989a5dc62b48`, CRC-32 `f029749e`) replaced `cores/console138k/tang-psx.bin` with verified readback, and its self-checks passed. The extended `memlat` (payload CRC-32 `dde8e023`) measured 240.0 core cycles for 64 KiB and 96 KiB with the L2 on and 569.6 to 569.7 with it off, about 570 for larger regions either way, and about 1 percent slower streaming with it on (AE350-010). The controller's read latency averaged 27.1 to 28.3 DDR clocks with a maximum of 60 to 70 (DDR3-005), lower than entry 43 inferred, leaving about 13 system cycles of a miss in the AE350 and in waits behind other clients; the 32-bit sum wraps after about 150 million reads. On Spyro with the L2 on, against entry 40's run of the same program on the previous core, the intro ran at 15.0 against 14.1 VBlanks per second with CPU emulation outside the GPU at 17.8 against 21.0 ms per VBlank and Lightrec's own execution at 15.5 against 17.4 ms, while the GPU stall still dominated; the boot reached VBlank 1,700 in 96 s against 118 s, and the disc-loading stretch from VBlank 650 to 1,000 took 5.0 s against 14.8 s. The user judged it about 1.5 times as fast and skipped a same-core L2-off run. A reset during that run hung the next program in `psx_gpu_reset`, because the reset had left the fabric holding half a descriptor that never drains; the wait for idle now gives up after about 100,000 polls before resetting the fabric, and the four GPU programs were rebuilt and uploaded (Lightrec disc payload CRC-32 `56a0fa69`). The user also wired a Raspberry Pi Pico 2 running JTAGprobe to the FPGA module's 8-pin JTAG + UART connector, whose pinout the module schematic gives (BRD-006), leaving its UART and 5 V pins unconnected; OpenOCD 0.12.0 found the Gowin TAP `0x0001081B`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed that `.ai/core.md` is unchanged, inspected the complete `.ai` diff including BRD-006, AE350-010 and DDR3-005, validated this entry as number 44 with exactly six required sections, confirmed that 44 active entries remain below the 100-entry limit, and confirmed that no settled history was rewritten.
+
+#### Next Steps:
+
+Reevaluate with the user. The L2's hit cost could fall further by streaming the four burst beats without the register slice's three cycles each, and its size or associativity could be revisited, but the dominant cost in the intro remains the fabric rasterizer stall, so GPU step 2a from entry 39 is the recommended next work, with the display copy and the 48-word feed after it. Confirm the timeout path of `psx_gpu_reset` on hardware by resetting the AE350 during a Spyro run and starting it again.
+
+#### Files Modified:
+
+- README.md
+- gateware/ae350_gate1.py
+- gateware/ddr3_vendor/gowin_ddr3_native.sv
+- gateware/gowin_ddr3.py
+- gateware/l2_cache.py
+- gateware/sim/gowin_ddr3_native_tb.sv
+- gateware/sim/test_ae350_memory_latency.py
+- gateware/sim/test_l2_cache.py
+- software/programs/memlat/main.c
+- software/psx/gpu.c
+- tools/ae350_run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

@@ -22,7 +22,7 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | Address | Meaning |
 | --- | --- |
 | `0x00` | Magic `0x54505831` (`TPX1`) |
-| `0x04` | ABI version (`0x00020003`) |
+| `0x04` | ABI version (`0x00020004`) |
 | `0x08` | Firmware stage; bit 31 means complete |
 | `0x0c` | Failure code; zero means no detected failure |
 | `0x10` | Number of DDR words verified |
@@ -54,6 +54,9 @@ The diagnostic image identifies as core `0x51`. Tang-Control `peek` reads:
 | `0x208` | Disc request byte length |
 | `0x20c` | Disc size in 2352-byte sectors; written by Tang-Control, 0 = no disc |
 | `0x210` | PmodVGA mode, written by Tang-Control: bit 0 swaps sockets, bit 1 swaps rows, bit 2 test pattern, bit 3 linear pin numbering |
+| `0x218` | Fabric L2 cache enable, bit 0, default 1; written by Tang-Control |
+| `0x220`-`0x22c` | L2 read hits, read misses, bypass reads, writes |
+| `0x230`-`0x238` | DDR3 controller reads returned, their summed and largest latency in 100 MHz clocks |
 
 A Digilent PmodVGA across the dock's two PMOD sockets shows the same 640x480
 picture as HDMI, at 12-bit colour. `tools/ae350_run.py vga` sets its mode:

@@ -30,6 +30,7 @@ import gowin_ddr3
 from ae350_ram_bridge import Gate1RAMBridge
 from ddr3_port_arbiter import DDR3PortArbiter, DDR3RWArbiter
 from gpu_accel import GPUAccelerator
+from l2_cache import L2Cache
 from stream_loader import StreamLoader
 from vga_output import VGAOutput
 
@@ -47,6 +48,10 @@ MAIN_RAM_BASE = 0x4000_0000
 FRAMEBUFFER_BASE = 0x7ff0_0000
 GPU_ACCEL_BASE = 0xe900_0000
 FRAMEBUFFER_FIFO_BYTES = 4096
+# AE350 L2 (gateware/l2_cache.py): 4096 lines of 32 bytes. PlayStation VRAM
+# and the HDMI framebuffer, which the fabric GPU writes, are not cached.
+L2_LINES = 4096
+L2_BYPASS_BASE = 0x7fe0_0000
 HDMI_TIMINGS = {
     # The proven Tang Console PHY uses a 125 MHz serializer clock divided by
     # five.  Standard 640x480 blanking at the resulting 25 MHz pixel clock is
@@ -486,12 +491,19 @@ class Gate1SoC(tang_console.BaseSoC):
         # The AE350 RAM port is split by Gate1RAMBridge, which registers the DDR3 Wishbone path
         # so no combinational path runs from the LiteDRAM frontend into the AE350 macro.
         region = self.bus.regions["main_ram"]
-        cpu_port = LiteDRAMNativePort("both",
+        bridge_port = LiteDRAMNativePort("both",
             address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
             data_width    = gowin_ddr3.DATA_WIDTH)
         self.cpu.ram_bridge = Gate1RAMBridge(
-            self.cpu.ahb_ram, self.cpu.dbus, cpu_port, region.origin, region.size)
-        self.cpu.memory_buses.append(cpu_port)
+            self.cpu.ahb_ram, self.cpu.dbus, bridge_port, region.origin, region.size)
+        self.cpu.memory_buses.append(bridge_port)
+        cpu_port = LiteDRAMNativePort("both",
+            address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
+            data_width    = gowin_ddr3.DATA_WIDTH)
+        line_bytes = gowin_ddr3.DATA_WIDTH // 8
+        self.l2 = L2Cache(bridge_port, cpu_port, L2_LINES,
+            bypass_base = (L2_BYPASS_BASE - region.origin) // line_bytes,
+            bypass_end  = region.size // line_bytes)
         video_port = LiteDRAMNativePort("read",
             address_width = 32 - log2_int(gowin_ddr3.DATA_WIDTH//8),
             data_width    = gowin_ddr3.DATA_WIDTH)
@@ -653,6 +665,20 @@ class Gate1SoC(tang_console.BaseSoC):
             vga_mode.eq(debug_wdata[:4]))
         self.specials += MultiReg(vga_mode, self.vga.mode, "hdmi")
 
+        # L2 enable (debug address 0x218, bit 0, default on) and counters.
+        l2_enable = Signal(reset=1)
+        self.sync.diag += If(debug_valid & debug_write & (debug_address == 0x218),
+            l2_enable.eq(debug_wdata[0]))
+        self.specials += MultiReg(l2_enable, self.l2.enable, "sys")
+        l2_counters = {}
+        for address, source in (
+                (0x220, self.l2.read_hits), (0x224, self.l2.read_misses),
+                (0x228, self.l2.bypass_reads), (0x22c, self.l2.writes),
+                (0x230, self.ddr3.latency_count), (0x234, self.ddr3.latency_sum),
+                (0x238, self.ddr3.latency_max)):
+            l2_counters[address] = Signal(32)
+            self.specials += MultiReg(source, l2_counters[address], "diag")
+
         reset_request = Signal()
         reset_count = Signal(5)
         self.reset_pulse = reset_pulse = PulseSynchronizer("diag", "sys")
@@ -669,7 +695,7 @@ class Gate1SoC(tang_console.BaseSoC):
 
         debug_registers = {
             0x00: debug_rdata_comb.eq(0x54505831),
-            0x04: debug_rdata_comb.eq(0x00020003),
+            0x04: debug_rdata_comb.eq(0x00020004),
             0x08: debug_rdata_comb.eq(self.gate1._stage.storage),
             0x0c: debug_rdata_comb.eq(self.gate1._failure.storage),
             0x10: debug_rdata_comb.eq(self.gate1._ddr_words.storage),
@@ -705,7 +731,10 @@ class Gate1SoC(tang_console.BaseSoC):
             0x208: debug_rdata_comb.eq(self.gate1._disc_length.storage),
             0x20c: debug_rdata_comb.eq(disc_sectors),
             0x210: debug_rdata_comb.eq(vga_mode),
+            0x218: debug_rdata_comb.eq(l2_enable),
         }
+        for address, counter in l2_counters.items():
+            debug_registers[address] = debug_rdata_comb.eq(counter)
         for index, register in enumerate(self.gate1._log):
             debug_registers[0x40 + 4*index] = debug_rdata_comb.eq(register.storage)
 

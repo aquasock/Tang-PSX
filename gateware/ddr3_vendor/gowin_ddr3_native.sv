@@ -45,10 +45,15 @@ module gowin_ddr3_native #(
     input  logic [255:0]         ctrl_rd_data,
     input  logic                 ctrl_rd_data_valid,
 
-    // Diagnostics.
+    // Diagnostics.  Read latency runs from a read's issue to its data from
+    // the controller, in clk cycles: returned reads, their summed latency,
+    // and the largest.
     output logic [31:0]          reads,
     output logic [31:0]          writes,
-    output logic                 overflow
+    output logic                 overflow,
+    output logic [31:0]          latency_count,
+    output logic [31:0]          latency_sum,
+    output logic [31:0]          latency_max
 );
 
     localparam int PTR_BITS = $clog2(READ_DEPTH);
@@ -63,6 +68,12 @@ module gowin_ddr3_native #(
     logic [255:0]         fifo_data [READ_DEPTH];
     logic [PTR_BITS-1:0]  fifo_wr, fifo_rd;
     logic [PTR_BITS:0]    fifo_count;
+
+    // Issue times of reads in flight; the controller returns reads in order.
+    logic [31:0]          now;
+    logic [31:0]          issued_at [READ_DEPTH];
+    logic [PTR_BITS-1:0]  issued_wr, issued_rd;
+    wire  [31:0]          latency = now - issued_at[issued_rd];
 
     wire read_credit = in_flight != READ_DEPTH[PTR_BITS:0];
     wire issue_write = pend_valid &&  pend_we && ctrl_cmd_ready && ctrl_wr_data_rdy && wdata_valid;
@@ -106,6 +117,19 @@ module gowin_ddr3_native #(
         fifo_count <= fifo_count + {{PTR_BITS{1'b0}}, ctrl_rd_data_valid}
                                  - {{PTR_BITS{1'b0}}, rdata_fire};
 
+        now <= now + 32'd1;
+        if (issue_read) begin
+            issued_at[issued_wr] <= now;
+            issued_wr <= issued_wr + 1'b1;
+        end
+        if (ctrl_rd_data_valid) begin
+            issued_rd     <= issued_rd + 1'b1;
+            latency_count <= latency_count + 32'd1;
+            latency_sum   <= latency_sum + latency;
+            if (latency > latency_max)
+                latency_max <= latency;
+        end
+
         if (issue_read)
             reads <= reads + 32'd1;
         if (issue_write)
@@ -120,6 +144,11 @@ module gowin_ddr3_native #(
             reads      <= '0;
             writes     <= '0;
             overflow   <= 1'b0;
+            issued_wr  <= '0;
+            issued_rd  <= '0;
+            latency_count <= '0;
+            latency_sum   <= '0;
+            latency_max   <= '0;
         end
     end
 

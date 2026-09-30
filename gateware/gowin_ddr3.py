@@ -189,6 +189,10 @@ class GowinDDR3(LiteXModule, AutoCSR):
             stream.PipeValid(ddr_port.wdata.description))
         self.comb += ddr_port.wdata.connect(wdata_pipe.sink)
 
+        # Controller read latency in DDR clocks (gowin_ddr3_native.sv), ddr domain.
+        self.latency_count = Signal(32)
+        self.latency_sum = Signal(32)
+        self.latency_max = Signal(32)
         self.specials += Instance("gowin_ddr3_native",
             p_ADDR_BITS  = ADDRESS_BITS,
             p_READ_DEPTH = 8,
@@ -219,6 +223,9 @@ class GowinDDR3(LiteXModule, AutoCSR):
             o_reads              = Signal(32),
             o_writes             = Signal(32),
             o_overflow           = overflow,
+            o_latency_count      = self.latency_count,
+            o_latency_sum        = self.latency_sum,
+            o_latency_max        = self.latency_max,
         )
 
         # A registered read-data stage keeps the crossing FIFO's gray-code

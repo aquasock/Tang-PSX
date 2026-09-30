@@ -102,10 +102,12 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Which FPGA pins carry DDR3, the clock, and the BL616 UART? | BRD | BRD-002, BRD-003 |
 | Which FPGA pins reach the dock's PMOD sockets, and how are their pins numbered? | BRD | BRD-004 |
 | Which PmodVGA pins carry colour and sync? | BRD | BRD-005 |
+| What is on the FPGA module's 8-pin JTAG + UART connector? | BRD | BRD-006 |
 | What DDR3 controller configuration is proven on this board? | DDR3 | DDR3-001 |
 | How do I drive the Gowin DDR3 native (user) port correctly? | DDR3 | DDR3-002 |
 | How is the native-port address laid out? | DDR3 | DDR3-003 |
 | Which Gowin DDR3 IP version does our toolchain ship, and what differs? | DDR3 | DDR3-004 |
+| What read latency does the Gowin controller show in Gate 1? | DDR3 | DDR3-005 |
 | What is on the SDRAM add-on and which connector pins does it use? | SDR | SDR-001 |
 | Where does the AE350 reset, and where are its bus windows? | AE350 | AE350-001 |
 | How do I enable, inspect, and flush the AE350 caches? | AE350 | AE350-002 |
@@ -116,6 +118,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a name; it does not clai
 | Which PLL output clocks the AE350 core? | AE350 | AE350-007 |
 | Does this board's A25 have hardware cache prefetch? | AE350 | AE350-008 |
 | What does an AE350 cache miss to DDR3 cost? | AE350 | AE350-009 |
+| What does a hit in the fabric L2 cost the AE350? | AE350 | AE350-010 |
 | Which CPU semantics must the R3000A interpreter preserve? | PSXCPU | PSXCPU-001 |
 | Where are the PlayStation GTE registers and coordinate-command formulas documented? | GTE | GTE-001 |
 | How are PlayStation GPU commands, status, transfers, drawing, and VRAM laid out? | PSXGPU | PSXGPU-001 |
@@ -151,10 +154,12 @@ BRD-002: "x32 DDR3 pin map for PG484, SSTL15 at 1.5 V, from Sipeed's constraints
 BRD-003: "50 MHz oscillator on V22; BL616 UART to FPGA on V14 (FPGA RX) and U15 (FPGA TX), LVCMOS33"
 BRD-004: "PMOD1 (beside HDMI) IO0-7 = W19 W20 F19 F20 E22 D22 E21 D21; PMOD0 IO0-7 = V18 V19 G21 G22 F18 E18 C22 B22; IO 2k is pin k+1, IO 2k+1 is pin k+7; LVCMOS33"
 BRD-005: "Digilent PmodVGA: J1 pins 1-4 R0-R3, 7-10 B0-B3; J2 pins 1-4 G0-G3, 7 HS, 8 VS; bit 3 is the MSB; 3.3 V buffers"
+BRD-006: "Module connector U1201 (JST SH 8-pin): 1 5V0 via diode, 2 TMS T13, 3 TDO U13, 4 TCK V12, 5 TDI R13, 6 RX V14, 7 TX U15, 8 GND; JTAG shared with the dock BL616"
 DDR3-001: "Proven controller: 400 MHz memory clock, 1:4, CL6/CWL5, RTT_NOM 40, 256-bit native port on a 100 MHz user clock"
 DDR3-002: "Native port: cmd 000 write / 001 read; command and its write data in the same cycle; wr_data_mask 1 = byte skipped; read data cannot be back-pressured"
 DDR3-003: "addr[28:0] is in 32-bit words, one BL8 burst = 8 words; addr[28] (rank) is unused; addr[27:0] spans 1 GiB"
 DDR3-004: "Gowin EDA 1.9.11.03 ships DDR3 IP 5.9; Sipeed's 6.0 adds AXI/arbitration/MC-BSRAM options; WRITE_RECOVERY is ignored at this configuration"
+DDR3-005: "In Gate 1 the controller returns reads about 27-28 DDR clocks (270-280 ns) after issue on average, 60-70 at most, with HDMI scanout and AE350 traffic"
 SDR-001: "Add-on SDRAM is Winbond W9825G6KH-6: 32 MB x16 per chip, 166 MHz grade, on dock connectors J9/J10"
 AE350-001: "AE350 reset vector is fixed at 0x80000000; CPU-master extended AHB window at 0xE8000000 (0x08000000 long)"
 AE350-002: "Caches reset disabled; mcache_ctl 0x7CA bit0 IC_EN, bit1 DC_EN; mcctlcommand 0x7CC value 6 = L1D write-back+invalidate all; micm/mdcm/mmsc_cfg at 0xFC0/0xFC1/0xFC2"
@@ -165,6 +170,7 @@ AE350-004: "This board's A25: micm_cfg = mdcm_cfg = 0x00439ADA (32 KiB 4-way, 32
 AE350-007: "The A25 core runs at the frequency of PLL_R[0] CLKOUT1, whatever the netlist connects to CORE_CLK; put the CPU clock on CLKOUT1"
 AE350-008: "mcache_ctl bits 9 (IC_PREFETCH_EN) and 10 (DC_PREFETCH_EN) read back 0 after csrs on this board's A25: no hardware cache prefetch"
 AE350-009: "A D-cache miss to DDR3 costs about 570 core cycles (760 ns) through the Gate 1 RAM path, with no overlap between misses; a hit costs about 3"
+AE350-010: "A D-cache miss served by the 128 KiB fabric L2 costs about 240 core cycles; an L2 miss still costs about 570"
 PSXCPU-001: "PlayStation CPU execution needs MIPS I integer/COP0 semantics, one branch delay slot, one load delay slot, and Cause.BD/EPC exception state"
 GTE-001: "GTE is COP2; coordinate primitives include MVMVA, RTPS/RTPT, NCLIP, and AVSZ3/4 with fixed-point FIFOs and saturation flags"
 GTE-002: "Lighting/color commands chain LLM, BK+LCM, RGBC multiply, and FC depth cue through 44-bit MACs and push MAC/16 to the color FIFO"
@@ -284,6 +290,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
     - "Digilent PmodVGA schematic rev C.0, doc 500-345, dated 2016-12-06"
   verification: "On a Dell E773c CRT the test pattern displayed and the Gate 1 framebuffer looked identical to the HDMI output to the user (core-log entry 37); the bar order and ramp steps were not separately confirmed."
 
+- record_id: BRD-006
+  kind: BOARD
+  topic_id: BRD
+  title: "FPGA module JTAG + UART connector U1201"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "The Tang Mega 138K module's 8-pin JST SH connector U1201 carries, by pin: 1 5V0 through diode D13 (8P_5V0), 2 TMS (BANK10 T13), 3 TDO (U13), 4 TCK (V12), 5 TDI (R13), 6 RX into the FPGA (BANK5 V14), 7 TX out of the FPGA (BANK5 U15), 8 GND. On the Tang Mega 138K docks the same JTAG nets run directly to the BL616 debugger (DBG_JTAG, with a 0 ohm resistor on TDO), and V14/U15 are the BL616 UART pins of BRD-003."
+  consequence: "An external JTAG adapter shares TCK, TMS and TDI with the BL616, which drives them while it loads a core, so the adapter must be released or unplugged then; pins 6 and 7 must stay unconnected because they carry the Tang-Control transport. Pin 1 is about 4.4 V and must not reach a 3.3 V adapter. The connector reaches the FPGA's configuration JTAG, not the AE350's debug JTAG."
+  sources:
+    - "Sipeed tang_mega_138k_30353_Schematics.pdf (TANG_MEGA_138K_30353), sheet 'JTAG Connector', U1201; Sipeed Tang_Mega_NEO_Dock-138K_31005_Schematics.pdf, USB_JTAG (BL616) sheet"
+  verification: "Unloaded voltages on 2026-09-29 matched the assignment (GND, 3.37, 3.29, 3.36, 1.64, 1.22, 3.36, 4.44 V from pin 8 to pin 1), and a Raspberry Pi Pico 2 running lonehog/JTAGprobe (CMSIS-DAP v2, TCK GP19, TMS GP14, TDI GP18, TDO GP21) under OpenOCD 0.12.0 found one TAP with IDCODE 0x0001081B (Gowin, IR length 3) (core-log entry 44). openFPGALoader 0.13.1 did not find the probe, because its cmsisdap driver needs CMSIS-DAP v1 HID."
+
 - record_id: DDR3-001
   kind: MEMORY
   topic_id: DDR3
@@ -333,6 +351,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
     - "Gowin EDA 1.9.11.03 IDE/ipcore/DDR3/ddr3.ipspec (version 5.9) and libDDR3.so parameter templates"
     - "Sipeed TangMega-138K-example commit 06e7d8b, ddr3_memory_interface/temp/DDR3/{gwmc_param.v,DDR3_define.v} and ddr3_memory_interface_tmp.v (Tool Version V1.9.12.02_SP1, IP Version 6.0)"
   verification: "Regenerated and diffed locally on 2026-09-28 (core-log entry 16)."
+
+- record_id: DDR3-005
+  kind: MEMORY
+  topic_id: DDR3
+  title: "Gowin controller read latency in Gate 1"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "Counted in gowin_ddr3_native.sv from a read's issue to the controller's read data, over 13.7 to 69.8 million reads including HDMI scanout, AE350 and fabric GPU traffic, the average was 27.1 to 28.3 clocks of the 100 MHz user clock and the maximum 60 to 70."
+  consequence: "About 21 system cycles of the roughly 57-cycle AE350 miss are the controller; with the fabric path's 23 cycles to the last beat (core-log entry 43) the remaining 13 or so are AE350-internal handling and waits behind other clients. The 32-bit latency sum wraps after about 150 million reads, so averages must come from nearby snapshots."
+  sources:
+    - "gateware/ddr3_vendor/gowin_ddr3_native.sv latency counters, read through debug addresses 0x230-0x238"
+  verification: "Hardware readings on 2026-09-29 (core-log entry 44)."
 
 - record_id: SDR-001
   kind: MEMORY
@@ -459,6 +489,18 @@ TCTL-004: "Disc mailbox: firmware writes offset 0x204 and length 0x208, then adv
   sources:
     - "software/programs/memlat/main.c"
   verification: "Measured on hardware on 2026-09-29 (core-log entry 42)."
+
+- record_id: AE350-010
+  kind: PROCESSOR
+  topic_id: AE350
+  title: "AE350 miss cost with the fabric L2"
+  status: VERIFIED
+  verified_date: 2026-09-29
+  statement: "With gateware/l2_cache.py (128 KiB, direct-mapped, write-through) on the AE350 RAM port, software/programs/memlat measured dependent loads over 64 KiB and 96 KiB, which fit the L2 but not the 32 KiB D-cache, at 240.0 core cycles each with the L2 enabled and 569.6 to 569.7 with it disabled; 256 KiB and 4 MiB stayed at about 570 either way, and streaming loads and stores were about 1 percent slower with it enabled."
+  consequence: "An L2 hit costs about 24 system cycles against the simulation's 16 for the fabric path (core-log entry 43), so about 8 system cycles lie in the AE350 and the register slice's three cycles per beat; the extra tag-lookup cycle is not measurable on a miss."
+  sources:
+    - "software/programs/memlat/main.c; gateware/l2_cache.py"
+  verification: "Measured on hardware on 2026-09-29 with the L2 switched at debug address 0x218 (core-log entry 44)."
 
 - record_id: PSXCPU-001
   kind: PROCESSOR

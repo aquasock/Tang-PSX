@@ -13,6 +13,10 @@
       returns after the image starts and is intended for persistent programs.
   status
       Show loader state, stream counters, result registers, and the log.
+  l2 [on|off]
+      Enable or disable the fabric L2 cache (debug address 0x218), then show
+      its hit, miss, bypass and write counts and the DDR3 controller's read
+      latency (count, average and maximum in 100 MHz clocks).
   vga [--swap-sockets] [--swap-rows] [--linear] [--pattern]
       Set the PmodVGA placement and test pattern (debug address 0x210), then
       show the setting. With no options, restore the default placement and the
@@ -46,6 +50,7 @@ REMOTE_DIR = "tpx"
 
 RESET_ADDRESS = 0x100
 VGA_ADDRESS = 0x210
+L2_ADDRESS = 0x218
 STATE_NAMES = {
     0x00: "boot", 0x01: "wait", 0x02: "receive", 0x03: "run", 0x04: "returned",
     0x81: "error: bad header", 0x82: "error: bad load range", 0x83: "error: truncated",
@@ -173,6 +178,21 @@ def command_vga(args, port):
     return 0
 
 
+def command_l2(args, port):
+    if args.state:
+        poke(port, L2_ADDRESS, 1 if args.state == "on" else 0)
+    enabled = peek(port, L2_ADDRESS)[0] & 1
+    hits, misses, bypass, writes = peek(port, 0x220, 4)
+    count, total, largest = peek(port, 0x230, 3)
+    reads = hits + misses
+    print(f"l2         {'on' if enabled else 'off'}: {hits} hits, {misses} misses"
+          f" ({100 * hits / reads if reads else 0:.1f}% hit), {bypass} bypass reads,"
+          f" {writes} writes")
+    print(f"ddr3 reads {count}, average latency "
+          f"{total / count if count else 0:.1f}, max {largest} DDR clocks")
+    return 0
+
+
 def command_run(args, port):
     remote = args.remote if "/" in args.remote else f"{REMOTE_DIR}/{args.remote}"
     if args.reset:
@@ -218,6 +238,8 @@ def main():
                    help="return after starting a persistent program")
     p.add_argument("--timeout", type=float, default=30.0)
     sub.add_parser("status")
+    p = sub.add_parser("l2")
+    p.add_argument("state", nargs="?", choices=("on", "off"))
     p = sub.add_parser("vga")
     p.add_argument("--swap-sockets", action="store_true",
                    help="J1 (red/blue) on PMOD0 and J2 on PMOD1 (default: "
@@ -250,6 +272,8 @@ def main():
             return command_run(args, port)
         if args.command == "vga":
             return command_vga(args, port)
+        if args.command == "l2":
+            return command_l2(args, port)
         print_status(port)
         return 0
     finally:

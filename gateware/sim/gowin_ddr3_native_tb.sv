@@ -39,6 +39,7 @@ module tb_gowin_ddr3_native;
     logic [31:0]  ctrl_wr_data_mask;
     logic [31:0]  reads, writes;
     logic         overflow;
+    logic [31:0]  latency_count, latency_sum, latency_max;
 
     gowin_ddr3_native #(.ADDR_BITS(ADDR_BITS), .READ_DEPTH(4)) dut (.*);
 
@@ -183,6 +184,11 @@ module tb_gowin_ddr3_native;
             errors++;
         end
         if (overflow) begin $display("FAIL: return FIFO overflow"); errors++; end
+        if (latency_count != reads || latency_max == 0 || latency_sum < latency_count) begin
+            $display("FAIL: latency counters %0d/%0d/%0d for %0d reads",
+                latency_count, latency_sum, latency_max, reads);
+            errors++;
+        end
         if (reads != checked || reads + writes != OPS) begin
             $display("FAIL: issued %0d reads + %0d writes, checked %0d", reads, writes, checked); errors++;
         end

@@ -3,16 +3,19 @@
 // AE350 data-memory cost in DDR3, in core cycles per access, with the loader's
 // cache settings. Each region holds one 32-byte node per cache line.
 //
-//   L16K, L256K, L4M  dependent loads along a random single cycle of nodes
+//   L16K ... L4M      dependent loads along a random single cycle of nodes
 //                     (Sattolo), so every load waits for the previous one;
-//                     16 KiB fits the 32 KiB D-cache, 4 MiB does not
+//                     16 KiB fits the 32 KiB D-cache, 64 and 96 KiB fit the
+//                     128 KiB fabric L2 (gateware/l2_cache.py) but not the
+//                     D-cache, and 256 KiB and 4 MiB fit neither
 //   Q4M               loads of consecutive lines, independent of each other
 //   S4M               one store per line, including write-back of the dirty
 //                     lines each store evicts
 //
 // The D-cache is written back and invalidated before each measurement.
 // Results go to the log and to the result registers (WORDS L4M, CHECKSUM
-// L256K, JIT L16K, FEATURES Q4M, FAIL_ADDRESS S4M).
+// L256K, JIT L16K, FEATURES Q4M, FAIL_ADDRESS S4M, FAIL_EXPECTED L64K,
+// FAIL_OBSERVED L96K).
 
 #include <stdint.h>
 
@@ -141,6 +144,8 @@ static void report(const struct tpx_api *api, const char *label,
 uint32_t main(const struct tpx_api *api)
 {
 	uint32_t l16k;
+	uint32_t l64k;
+	uint32_t l96k;
 	uint32_t l256k;
 	uint32_t l4m;
 	uint32_t q4m;
@@ -149,12 +154,16 @@ uint32_t main(const struct tpx_api *api)
 	api->set_reg(TPX_REG_STAGE, 0x00050001u);
 	api->set_reg(TPX_REG_FAILURE, 0);
 	l16k = chase(api, 16u << 10);
+	l64k = chase(api, 64u << 10);
+	l96k = chase(api, 96u << 10);
 	l256k = chase(api, 256u << 10);
 	l4m = chase(api, REGION_BYTES);
 	q4m = stream_read(api);
 	s4m = stream_write(api);
 	report(api, "L16K ", l16k);
-	report(api, " L256K ", l256k);
+	report(api, " L64K ", l64k);
+	report(api, " L96K ", l96k);
+	report(api, "\nL256K ", l256k);
 	report(api, " L4M ", l4m);
 	report(api, "\nQ4M ", q4m);
 	report(api, " S4M ", s4m);
@@ -164,6 +173,8 @@ uint32_t main(const struct tpx_api *api)
 	api->set_reg(TPX_REG_JIT, l16k);
 	api->set_reg(TPX_REG_FEATURES, q4m);
 	api->set_reg(TPX_REG_FAIL_ADDRESS, s4m);
+	api->set_reg(TPX_REG_FAIL_EXPECTED, l64k);
+	api->set_reg(TPX_REG_FAIL_OBSERVED, l96k);
 	api->set_reg(TPX_REG_STAGE, 0x80050001u);
 	return 0x3e3a7001u;
 }
