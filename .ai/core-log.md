@@ -1590,3 +1590,33 @@ None.
 - User Test: N/A
 
 ---
+
+## 47 COMMIT Unreleased 2026-11-22T10:29:23-07:00
+
+#### Coming From:
+
+Unreleased 61974ca
+
+#### Purpose:
+
+Mark the README as archived, at the operator's request during a documentation pass across the TinyTang ecosystem.
+
+#### Outcome:
+
+The operator stated on 2026-10-03, as TinyTang's PROV-001 records, that Tang-PSX is archived rather than deleted, and the ecosystem site lists it as historical, but the README still read as a live project. A short notice at the top now says it is no longer developed and is kept as a record of the PlayStation work and of the AE350, DDR3 and transport findings later projects built on, which TinyTang's reference harvested as PSX-001 to PSX-006; the rest of the README is unchanged. The working tree carries one modified file that is not this cycle's and it is left out of the commit. Nothing was built or deployed. The core-syntax audit was run: `.ai/core.md` and `.ai/core-syntax.md` were re-read, `.ai/core.md` was confirmed unchanged, the complete `.ai/` diff was inspected and holds only this entry, and this entry was validated as number 47 of 100 with six canonical sections in order, a one-sentence Purpose, prose in Outcome and Next Steps, only eligible paths in Files Modified and allowed Status values.
+
+#### Next Steps:
+
+No work is planned; the repository is archived.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
